@@ -1,7 +1,7 @@
 <table>
   <tr>
     <td width="150" valign="middle">
-      <img src=".github/assets/logo.png" width="150" alt="easy_memory logo" />
+      <img src=".github/assets/logo.jpeg" width="150" alt="easy_memory logo" />
     </td>
     <td valign="middle">
       <div id="user-content-toc">
@@ -110,7 +110,7 @@ Memory allocation strategies always involve a fundamental trade-off between thre
 
 This library makes a deliberate architectural choice to prioritize **locality and stability**, which are often the most critical factors for high-performance systems like games, servers, and embedded applications.
 
-![Tradeoffs](.github/assets/design_tradeoffs.png)
+![Tradeoffs](.github/assets/design_tradeoffs.jpeg)
 
 ### Principle 1: Pointers are Stable (No `realloc`)
 Once memory is allocated from the system, its address will **never** change during its lifetime. This pointer stability allows you to safely store pointers to allocated objects without worrying about them becoming invalidated by a resize operation.

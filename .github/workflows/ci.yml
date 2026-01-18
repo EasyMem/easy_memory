@@ -1,0 +1,221 @@
+name: EasyMemory CI
+
+on:
+  push:
+    branches: [ "main", "master" ]
+    paths:
+      - 'easy_memory.h'
+      - 'Makefile'
+      - 'tests/**'
+      - '.github/workflows/ci.yml'
+  pull_request:
+    branches: [ "main", "master" ]
+    paths:
+      - 'easy_memory.h'
+      - 'Makefile'
+      - 'tests/**'
+      - '.github/workflows/ci.yml'
+
+jobs:
+  # Job 1: Build and test on primary x86_64 platforms
+  build-and-test-x86_64:
+    name: ${{ matrix.os }} | x86_64 | ${{ matrix.compiler }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        compiler: [gcc, clang]
+        exclude:
+          - os: windows-latest
+            compiler: clang
+          - os: macos-latest
+            compiler: gcc
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Linux Setup
+      - name: Set up build environment (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y build-essential valgrind ${{ matrix.compiler }}
+
+      # macOS Setup (uses pre-installed tools)
+      - name: Set up build environment (macOS)
+        if: runner.os == 'macOS'
+        run: echo "Using pre-installed Clang on macOS."
+
+      # Windows Setup (GCC via MSYS2)
+      - name: Set up MSYS2 and GCC (Windows)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: mingw-w64-x86_64-toolchain make
+
+      # Build & Test Steps
+      - name: Build and Test with Makefile
+        if: runner.os != 'Windows'
+        run: make tests CC=${{ matrix.compiler }}
+
+      - name: Build and Test with Makefile (Windows/GCC)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: make tests CC=gcc
+
+      # MSVC Smoke Test (Windows Only)
+      - name: Build and Test each test file with MSVC
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          cd tests
+          FOR %%f IN (*.c) DO (
+            echo --- Compiling %%f with MSVC ---
+            cl.exe /W4 /DDEBUG /I.. /Fe:%%~nf.exe %%f
+            echo --- Running %%~nf.exe ---
+            call %%~nf.exe
+          )
+
+      # Valgrind & Codecov (Linux/GCC Only)
+      - name: Run Valgrind Memory Check
+        if: runner.os == 'Linux' && matrix.compiler == 'gcc'
+        run: make valgrind CC=gcc
+
+      - name: Build for Coverage
+        if: runner.os == 'Linux' && matrix.compiler == 'gcc'
+        run: |
+          sudo apt-get update && sudo apt-get install -y lcov
+          make coverage CC=gcc
+
+      - name: Upload coverage to Codecov
+        if: runner.os == 'Linux' && matrix.compiler == 'gcc'
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.info
+          token: ${{ secrets.CODECOV_TOKEN }}
+          config_file: ./.github/codecov.yml
+          fail_ci_if_error: true
+          verbose: true
+
+  # Job 2: Build and test for 32-bit architecture (i686)
+  build-and-test-32bit:
+    name: Ubuntu | x86_32 | GCC
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Set up 32-bit build environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-multilib gdb
+      - name: Build and Test in 32-bit mode
+        run: make tests CC="gcc -m32"
+
+  # Job 3: Build and test on modern ARM64 (aarch64) - forgiving alignment
+  build-and-test-arm64-modern:
+    name: Ubuntu | ARM64 (Modern, Forgiving Alignment) | GCC
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Set up QEMU for ARM emulation
+        uses: docker/setup-qemu-action@v3
+      - name: Build and Test in ARM64 Docker container
+        run: |
+          docker run --rm --platform linux/arm64 -v ${{ github.workspace }}:/workspace -w /workspace arm64v8/ubuntu:latest \
+          sh -c " \
+            apt-get update && \
+            apt-get install -y build-essential gcc make && \
+            make tests_full CC=gcc \
+          "
+
+  # Job 4: Build and test on strict ARM64 (aarch64) - unaligned access will CRASH
+  build-and-test-arm64-strict:
+    name: Ubuntu | ARM64 (Strict Alignment via UBSan) | GCC
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Set up QEMU for ARM emulation
+        uses: docker/setup-qemu-action@v3
+      - name: Build and Test in Strict ARM64 Docker container
+        run: |
+          docker run --rm --platform linux/arm64 \
+            -v ${{ github.workspace }}:/workspace \
+            -w /workspace \
+            --env UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+            arm64v8/ubuntu:latest \
+            sh -c " \
+              echo '--- Installing dependencies ---' && \
+              apt-get update -y && \
+              apt-get install -y build-essential gcc make && \
+              \
+              echo '--- Building and running tests with UBSan for alignment ---' && \
+              make tests_full CC='gcc -g -fsanitize=alignment' \
+            "
+
+  # Job 5: Build and test on Big Endian architecture (s390x)
+  build-and-test-big-endian:
+    name: Ubuntu | Big Endian (s390x) | GCC
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Set up QEMU for s390x emulation
+        uses: docker/setup-qemu-action@v3
+      - name: Build and Test in Big Endian (s390x) Docker container
+        run: |
+          docker run --rm --platform linux/s390x \
+            -v ${{ github.workspace }}:/workspace \
+            -w /workspace \
+            s390x/ubuntu:latest \
+            sh -c " \
+              echo '--- Installing dependencies for s390x ---' && \
+              apt-get update -y && \
+              apt-get install -y build-essential gcc make && \
+              \
+              echo '--- Building and running tests on Big Endian ---' && \
+              make tests_full CC=gcc \
+            "
+
+  # Job 6: Build and test on 32-bit ARM (armv7)
+  build-and-test-arm32:
+    name: Ubuntu | ARM32 (armv7) | GCC
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Set up QEMU for ARM32 emulation
+        uses: docker/setup-qemu-action@v3
+      - name: Build and Test in ARM32 (armv7) Docker container
+        run: |
+          docker run --rm --platform linux/arm/v7 \
+            -v ${{ github.workspace }}:/workspace \
+            -w /workspace \
+            arm32v7/ubuntu:latest \
+            sh -c " \
+              echo '--- Installing dependencies for ARM32 ---' && \
+              apt-get update -y && \
+              apt-get install -y build-essential gcc make && \
+              \
+              echo '--- Building and running tests on ARM32 ---' && \
+              make tests_full CC=gcc \
+            "
+  build-and-test-C-stds:
+    name: Build & Test (${{ matrix.os }}, ${{ matrix.std }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        std: [c99, c11, c17, c2x]
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Compile and Test
+        run: |
+          make tests STD_C=${{ matrix.std }}

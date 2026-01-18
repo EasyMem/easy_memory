@@ -51,5 +51,14 @@ Module.symvers
 Mkfile.old
 dkms.conf
 
-# debug information files
-*.dwo
+# Tests
+tests/stress_test_*
+tests/same_size_test_*
+tests/validation_test_*
+tests/bump_alloc_test_*
+tests/em_nested_test_*
+
+# Coverage files
+*.gcno
+*.gcda
+*.info

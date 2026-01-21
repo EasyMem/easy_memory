@@ -45,13 +45,13 @@ $(TEST_DIR)/%_coverage: $(TEST_DIR)/%.cov.o
 
 # Pattern rule for running individual tests (always with debug)
 test_%: $(TEST_DIR)/%_test_debug
-	@echo "\n--- Running $< (debug mode) ---"
+	@printf "\n--- Running $< (debug mode) ---\n"
 	@./$<
 	@if [ $$? -ne 0 ]; then \
-		echo "\nTest $< FAILED!"; \
+		printf "\nTest $< FAILED!\n"; \
 		exit 1; \
 	else \
-		echo "\nTest $< PASSED!"; \
+		printf "\nTest $< PASSED!\n"; \
 	fi
 
 # Compilation of all tests without debug
@@ -65,79 +65,79 @@ build_coverage: $(TEST_COV_BINS)
 
 # Memory leak check using valgrind
 valgrind: build_silent
-	@echo "Running valgrind memory check on all tests..."
+	@printf "Running valgrind memory check on all tests...\n"
 	@for test in $(TEST_SRCS:%.c=%_silent) ; do \
-		echo "\n--- Checking $$test ---" ; \
+		printf "\n--- Checking $$test ---\n" ; \
 		valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes ./$$test ; \
 	done
-	@echo "\nAll memory checks completed."
+	@printf "\nAll memory checks completed.\n"
 
 # Testing: run all tests without debug info
 tests: build_silent
-	@echo "Running all tests (normal mode)..."
+	@printf "Running all tests (normal mode)...\n"
 	@for test in $(TEST_SRCS:%.c=%_silent) ; do \
-		echo "\n--- Running $$test ---" ; \
+		printf "\n--- Running $$test ---\n" ; \
 		./$$test ; \
 		if [ $$? -ne 0 ]; then \
-			echo "\nTest $$test FAILED with exit code $$?"; \
+			printf "\nTest $$test FAILED with exit code $$?\n"; \
 			exit_code=1; \
 		fi; \
 	done; \
 	if [ "$$exit_code" = "1" ]; then \
-		echo "\nSome tests FAILED!"; \
+		printf "\nSome tests FAILED!\n"; \
 		exit 1; \
 	else \
-		echo "\nAll tests PASSED!"; \
+		printf "\nAll tests PASSED!\n"; \
 	fi
 
 # Testing: run all tests with debug info
 tests_full: build_debug
-	@echo "Running all tests (debug mode)..."
+	@printf "Running all tests (debug mode)...\n"
 	@for test in $(TEST_SRCS:%.c=%_debug) ; do \
-		echo "\n--- Running $$test ---" ; \
+		printf "\n--- Running $$test ---\n" ; \
 		./$$test ; \
 		if [ $$? -ne 0 ]; then \
-			echo "\nTest $$test FAILED with exit code $$?"; \
+			printf "\nTest $$test FAILED with exit code $$?\n"; \
 			exit_code=1; \
 		fi; \
 	done; \
 	if [ "$$exit_code" = "1" ]; then \
-		echo "\nSome tests FAILED!"; \
+		printf "\nSome tests FAILED!\n"; \
 		exit 1; \
 	else \
-		echo "\nAll tests PASSED!"; \
+		printf "\nAll tests PASSED!\n"; \
 	fi
 
 # Coverage: build with coverage flags and run tests to generate .gcda/.gcno files
 coverage: clean build_coverage
-	@echo "Running all tests to generate coverage data..."
+	@printf "Running all tests to generate coverage data...\n"
 	@exit_code=0; \
 	for test in $(TEST_COV_BINS) ; do \
-		echo "\n--- Running $$test (for coverage) ---" ; \
+		printf "\n--- Running $$test (for coverage) ---\n" ; \
 		./$$test ; \
 		if [ $$? -ne 0 ]; then \
-			echo "\nTest $$test FAILED with exit code $$?"; \
+			printf "\nTest $$test FAILED with exit code $$?\n"; \
 			exit_code=1; \
 		fi; \
 	done; \
 	if [ "$$exit_code" = "1" ]; then \
-		echo "\nSome tests FAILED! Coverage data generation might be incomplete."; \
+		printf "\nSome tests FAILED! Coverage data generation might be incomplete.\n"; \
 		exit 1; \
 	else \
-		echo "\nCoverage data generated successfully from all tests."; \
+		printf "\nCoverage data generated successfully from all tests.\n"; \
 	fi
 	
-	@echo "\nGenerating final coverage.info for Codecov..."
+	@printf "\nGenerating final coverage.info for Codecov...\n"
 	lcov --capture --directory . --output-file coverage.info
 
-	@echo "Filtering system files from the report..."
+	@printf "Filtering system files from the report...\n"
 	lcov --remove coverage.info '/usr/*' '*/test_utils.h' --output-file coverage.info --ignore-errors unused
 
 	rm -f $(TEST_COV_BINS)
 	rm -f $(TEST_DIR)/*.gcda $(TEST_DIR)/*.gcno
 	@rm -f coverage_base.info coverage_run.info coverage_total.info
 
-	@echo "Successfully generated final coverage.info for Codecov."
+	@printf "Successfully generated final coverage.info for Codecov.\n"
 
 
 # Cleaning binary files and coverage files
@@ -150,12 +150,12 @@ clean:
 
 # Show available tests
 list:
-	@echo "Available commands:"
-	@echo "  make tests      - run all tests without debug output"
-	@echo "  make tests_full - run all tests with debug output"
-	@echo "  make coverage   - build & run tests to generate coverage data for CodeCov"
-	@echo "\nAvailable individual tests (always with debug output):"
+	@printf "Available commands:\n"
+	@printf "  make tests      - run all tests without debug output \n"
+	@printf "  make tests_full - run all tests with debug output\n"
+	@printf "  make coverage   - build & run tests to generate coverage data for CodeCov\n"
+	@printf "\nAvailable individual tests (always with debug output):\n"
 	@for test in $(TEST_SRCS) ; do \
 		basename=$$(basename $${test%.c} _test); \
-		echo "  make test_$$basename" ; \
+		printf "  make test_$$basename\n" ; \
 	done

@@ -89,7 +89,7 @@ At its core, `easy_memory` is a hierarchical system. It abstracts complex memory
 
 ### 1. The Core (Arena)
 The backbone of the system. It handles the heavy lifting of block splitting, merging, and alignment.
-*   **Origin:** This core logic is an evolution of the [**arena_c**](https://github.com/EasyMem/easy_memory) project, refined for stricter alignment support and bit-packed metadata.
+*   **Origin:** This core logic is an evolution of the [**arena_c**](https://github.com/gooderfreed/arena_c) project, refined for stricter alignment support and bit-packed metadata.
 *   **Adaptive Strategy:** It doesn't blindly search the tree. If you allocate sequentially, it acts as a fast O(1) bump allocator using the tail block. If you free in LIFO order (stack-like), it merges instantaneously. It only falls back to the O(log n) Tree Search when memory becomes fragmented.
 *   **Triple-Key Tree:** When searching for gaps, it finds the *best* block not just by size, but by alignment quality, preserving large contiguous chunks.
 

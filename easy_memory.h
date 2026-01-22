@@ -77,20 +77,32 @@ EM_STATIC_ASSERT(EM_MIN_BUFFER_SIZE > 0, "MIN_BUFFER_SIZE must be a positive val
 #define MAX_ALIGNMENT ((size_t)(256 << MIN_EXPONENT))
 #define MIN_ALIGNMENT ((size_t)sizeof(uintptr_t))
 
-#define ALIGNMENT_MASK  ((uintptr_t)7)
-#define SIZE_MASK       (~(uintptr_t)7)
-#define IS_FREE_FLAG    ((uintptr_t)1)
-#define COLOR_FLAG      ((uintptr_t)2) 
-#define PREV_MASK       (~(uintptr_t)3)
-#define IS_DYNAMIC_FLAG ((uintptr_t)1)
-#define IS_NESTED_FLAG  ((uintptr_t)2)
-#define TAIL_MASK       ((uintptr_t)~3)
+// size_and_alignment field masks
+#define ALIGNMENT_MASK     ((uintptr_t)7)
+#define SIZE_MASK         (~(uintptr_t)7)
+
+// prev field masks
+#define IS_FREE_FLAG       ((uintptr_t)1)
+#define COLOR_FLAG         ((uintptr_t)2) 
+#define PREV_MASK         (~(uintptr_t)3)
+
+// tail field masks
+#define IS_DYNAMIC_FLAG    ((uintptr_t)1)
+#define IS_NESTED_FLAG     ((uintptr_t)2)
+#define TAIL_MASK         (~(uintptr_t)3)
+
+// free_blocks field masks
+#define IS_PADDING         ((uintptr_t)1)
+#define HAS_SCRATCH_FLAG   ((uintptr_t)2)
+#define FREE_BLOCKS_MASK  (~(uintptr_t)3)
+
 
 #define RED false
 #define BLACK true
 
 #define BLOCK_MIN_SIZE (sizeof(Block) + EM_MIN_BUFFER_SIZE)
 #define EM_MIN_SIZE (sizeof(EM) + BLOCK_MIN_SIZE)
+
 
 #define block_data(block) ((void *)((char *)(block) + sizeof(Block)))
 
@@ -575,7 +587,7 @@ static inline void em_set_tail(EM *em, Block *block) {
 
     /* 
      * See 'set_prev' for explanation of pointer tagging.
-     * In this case we store is_dynamic flag in the tail pointer.
+     * In this case we store is_dynamic and is_nested flags in the tail pointer.
     */
 
     uintptr_t flags_tips = (uintptr_t)em->as.self.tail & ~TAIL_MASK; // Preserve flag bits
@@ -651,6 +663,75 @@ static inline void em_set_is_nested(EM *em, bool is_nested) {
 }
 
 
+
+/*
+ * Get has_padding flag from easy memory
+ * Extracts the has_padding flag stored in the easy memory's as.self.free_blocks field
+ */
+static inline bool em_get_padding_bit(const EM *em) {
+    EM_ASSERT((em != NULL) && "Internal Error: 'em_get_padding_bit' called on NULL easy memory");
+
+    return ((uintptr_t)em->as.self.free_blocks & IS_PADDING); // Check the is_padding flag bit
+}
+
+/*
+ * Set has_padding flag for easy memory
+ * Updates the has_padding flag in the easy memory's as.self.free_blocks field
+ */
+static inline void em_set_padding_bit(EM *em, bool has_padding) {
+    EM_ASSERT((em != NULL) && "Internal Error: 'em_set_padding_bit' called on NULL easy memory");
+
+    /*
+     * See 'set_prev' for explanation of pointer tagging.
+     * Here we use 1st least significant bit to store has_padding flag. 
+    */
+
+    uintptr_t int_ptr = (uintptr_t)(em->as.self.free_blocks); // Get current pointer with flags
+    if (has_padding) {
+        int_ptr |= IS_PADDING; // Set the is_padding flag bit
+    }
+    else {
+        int_ptr &= ~IS_PADDING; // Clear the is_padding flag bit
+    }
+    em->as.self.free_blocks = (Block *)int_ptr; // Update the free_blocks field with new flags
+}
+
+
+
+/*
+ * Get has_scratch flag from easy memory
+ * Extracts the has_scratch flag stored in the easy memory's as.self.free_blocks field
+ */
+static inline bool em_has_scratch(const EM *em) {
+    EM_ASSERT((em != NULL) && "Internal Error: 'em_is_scratch' called on NULL easy memory");
+
+    return ((uintptr_t)em->as.self.free_blocks & HAS_SCRATCH_FLAG); // Check the is_scratch flag bit
+}
+
+/*
+ * Set has_scratch flag for easy memory
+ * Updates the has_scratch flag in the easy memory's as.self.free_blocks field
+ */
+static inline void em_set_has_scratch(EM *em, bool has_scratch) {
+    EM_ASSERT((em != NULL) && "Internal Error: 'em_set_has_scratch' called on NULL easy memory");
+
+    /*
+     * See 'set_prev' for explanation of pointer tagging.
+     * Here we use 2nd least significant bit to store has_scratch flag. 
+    */
+
+    uintptr_t int_ptr = (uintptr_t)(em->as.self.free_blocks); // Get current pointer with flags
+    if (has_scratch) {
+        int_ptr |= HAS_SCRATCH_FLAG; // Set the has_scratch flag bit
+    }
+    else {
+        int_ptr &= ~HAS_SCRATCH_FLAG; // Clear the has_scratch flag bit
+    }
+    em->as.self.free_blocks = (Block *)int_ptr; // Update the free_blocks field with new flags
+}
+
+
+
 /*
  * Get free blocks tree from easy memory
  * Extracts the pointer to the root of the free blocks tree stored in the easy memory's as.self.free_blocks field
@@ -658,7 +739,7 @@ static inline void em_set_is_nested(EM *em, bool is_nested) {
 static inline Block *em_get_free_blocks(const EM *em) {
     EM_ASSERT((em != NULL) && "Internal Error: 'em_get_free_blocks' called on NULL easy memory");
 
-    return em->as.self.free_blocks; // Return pointer to the root of the free blocks tree
+    return (Block *)((uintptr_t)em->as.self.free_blocks & FREE_BLOCKS_MASK); // select only pointer bits
 }
 
 /*
@@ -668,7 +749,13 @@ static inline Block *em_get_free_blocks(const EM *em) {
 static inline void em_set_free_blocks(EM *em, Block *block) {
     EM_ASSERT((em != NULL) && "Internal Error: 'em_set_free_blocks' called on NULL easy memory");
 
-    em->as.self.free_blocks = block; // Set pointer to the root of the free blocks tree
+    /* 
+     * See 'set_prev' for explanation of pointer tagging.
+     * In this case we store padding_bit and has_scratch flags in the free_blocks pointer.
+    */
+
+    uintptr_t flags_tips = (uintptr_t)em->as.self.free_blocks & ~FREE_BLOCKS_MASK; // Preserve flag bits
+    em->as.self.free_blocks = (Block *)((uintptr_t)block | flags_tips); // set new pointer while preserving flag bits
 }
 
 
@@ -770,7 +857,7 @@ static inline Block *em_get_first_block(const EM *em) {
     uintptr_t aligned_start = align_up(raw_start + sizeof(Block), align) - sizeof(Block); // Align the start address to the easy memory's alignment
     
     return (Block *)aligned_start;
-} 
+}
 
 
 
@@ -1768,7 +1855,11 @@ EM *em_create_static_aligned(void *memory, size_t size, size_t alignment) {
 
     em_set_alignment(em, alignment);
     em_set_capacity(em, size - em_padding);
+    
     em_set_free_blocks(em, NULL);
+    em_set_has_scratch(em, false);
+    em_set_padding_bit(em, false); // enforce zero to be sure detention logic work correctly
+    
     em_set_tail(em, block);
     em_set_is_dynamic(em, false);
     em_set_is_nested(em, false);

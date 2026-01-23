@@ -57,6 +57,10 @@ jobs:
       - name: Build and Test with Makefile
         if: runner.os != 'Windows'
         run: make tests CC=${{ matrix.compiler }}
+      
+      - name: Verify CTZ Fallback Logic (Force Generic)
+        if: runner.os == 'Linux'
+        run: make test_fallback CC=${{ matrix.compiler }}
 
       - name: Build and Test with Makefile (Windows/GCC)
         if: runner.os == 'Windows'

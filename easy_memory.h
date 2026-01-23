@@ -12,7 +12,7 @@ extern "C" {
 #include <string.h>
 
 
-#if defined(_MSVC_VER)
+#if defined(_MSC_VER)
 #include <intrin.h>
 #endif
 
@@ -32,7 +32,7 @@ extern "C" {
 #else
     #if defined(__GNUC__) || defined(__clang__)
         #define EM_ASSERT(cond) do { if (!(cond)) __builtin_unreachable(); } while(0)
-    #elif defined(_MSVC_VER)
+    #elif defined(_MSC_VER)
         #define EM_ASSERT(cond) __assume(cond)
     #else
         #define EM_ASSERT(cond) ((void)0)
@@ -250,9 +250,10 @@ static inline size_t min_exponent_of(size_t num) {
     if (num == 0) return 0; // Undefined for zero, return 0 as a safe default
 
     // Use compiler built-ins if available for efficiency
-    #if defined(__GNUC__) || defined(__clang__)
+    // EM_FORCE_GENERIC needed for testing fallback generic implementation
+    #if (defined(__GNUC__) || defined(__clang__)) && !defined(EM_FORCE_GENERIC)
         return __builtin_ctz(num);
-    #elif defined(_MSVC_VER)
+    #elif defined(_MSC_VER) && !defined(EM_FORCE_GENERIC)
         unsigned long index;
         #if defined(_M_X64) || defined(_M_ARM64)
             _BitScanForward64(&index, num);
@@ -263,7 +264,7 @@ static inline size_t min_exponent_of(size_t num) {
     #else
         size_t s = num;
         size_t zeros = 0;
-        while ((s >>= 1) != 0) ++zeros;
+        while ((s & 1) == 0) { s >>= 1; zeros++; }
         return zeros;
     #endif
 }
@@ -1128,7 +1129,7 @@ static inline Block *create_next_block(EM *em, Block *prev_block) {
  * Merge source into target
  * Source must be physically immediately after target.
  */
-static inline void merge_blocks_logic(EM *em, Block *target, Block *source) {
+static inline inline void merge_blocks_logic(EM *em, Block *target, Block *source) {
     EM_ASSERT((em != NULL)      && "Internal Error: 'merge_blocks_logic' called on NULL easy memory");
     EM_ASSERT((target != NULL)  && "Internal Error: 'merge_blocks_logic' called on NULL target");
     EM_ASSERT((source != NULL)  && "Internal Error: 'merge_blocks_logic' called on NULL source");
@@ -1151,7 +1152,7 @@ static inline void merge_blocks_logic(EM *em, Block *target, Block *source) {
  * Rotate left
  * Used to balance the LLRB tree
  */
-Block *rotateLeft(Block *current_block) {
+static inline Block *rotateLeft(Block *current_block) {
     EM_ASSERT((current_block != NULL) && "Internal Error: 'rotateLeft' called on NULL current_block");
     
     Block *x = get_right_tree(current_block);
@@ -1168,7 +1169,7 @@ Block *rotateLeft(Block *current_block) {
  * Rotate right
  * Used to balance the LLRB tree
  */
-Block *rotateRight(Block *current_block) {
+static inline Block *rotateRight(Block *current_block) {
     EM_ASSERT((current_block != NULL) && "Internal Error: 'rotateRight' called on NULL current_block");
     
     Block *x = get_left_tree(current_block);
@@ -1185,7 +1186,7 @@ Block *rotateRight(Block *current_block) {
  * Flip colors
  * Used to balance the LLRB tree
  */
-void flipColors(Block *current_block) {
+static void flipColors(Block *current_block) {
     EM_ASSERT((current_block != NULL) && "Internal Error: 'flipColors' called on NULL current_block");
     
     set_color(current_block, RED);
@@ -2347,7 +2348,7 @@ void print_llrb_tree(Block *node, int depth) {
     
     // Print current node with indentation
     for (int i = 0; i < depth; i++) PRINTF(T("    "));
-    PRINTF(T("Block: %p, Size: %lu %i\n"),
+    PRINTF(T("Block: %p, Size: %zu %i\n"),
         node,
         get_size(node),
         get_color(node));
@@ -2364,13 +2365,13 @@ void print_llrb_tree(Block *node, int depth) {
 void print_em(EM *em) {
     if (!em) return;
     PRINTF(T("Easy Memory: %p\n"), em);
-    PRINTF(T("EM Full Size: %lu\n"), em_get_capacity(em) + sizeof(EM));
-    PRINTF(T("EM Data Size: %lu\n"), em_get_capacity(em));
-    PRINTF(T("EM Alignment: %lu\n"), em_get_alignment(em));
+    PRINTF(T("EM Full Size: %zu\n"), em_get_capacity(em) + sizeof(EM));
+    PRINTF(T("EM Data Size: %zu\n"), em_get_capacity(em));
+    PRINTF(T("EM Alignment: %zu\n"), em_get_alignment(em));
     PRINTF(T("Data: %p\n"), (void *)((char *)em + sizeof(EM)));
     PRINTF(T("Tail: %p\n"), em_get_tail(em));
     PRINTF(T("Free Blocks: %p\n"), em_get_free_blocks(em));
-    PRINTF(T("Free Size in Tail: %lu\n"), free_size_in_tail(em));
+    PRINTF(T("Free Size in Tail: %zu\n"), free_size_in_tail(em));
     PRINTF(T("\n"));
 
     size_t occupied_data = 0;
@@ -2383,12 +2384,12 @@ void print_em(EM *em) {
         occupied_meta += sizeof(Block);
         len++;
         PRINTF(T("  Block: %p\n"), block);
-        PRINTF(T("  Block Full Size: %lu\n"), get_size(block) + sizeof(Block));
-        PRINTF(T("  Block Data Size: %lu\n"), get_size(block));
+        PRINTF(T("  Block Full Size: %zu\n"), get_size(block) + sizeof(Block));
+        PRINTF(T("  Block Data Size: %zu\n"), get_size(block));
         PRINTF(T("  Is Free: %d\n"), get_is_free(block));
         PRINTF(T("  Data Pointer: %p\n"), block_data(block));
         if (!get_is_free(block)) {
-            PRINTF(T("  Magic: 0x%lx\n"), get_magic(block));
+            PRINTF(T("  Magic: 0x%zx\n"), get_magic(block));
             PRINTF(T("  EM: %p\n"), get_em(block));
         }
         else {
@@ -2411,10 +2412,10 @@ void print_em(EM *em) {
     }
     PRINTF(T("\n"));
 
-    PRINTF(T("EM occupied data size: %lu\n"), occupied_data);
-    PRINTF(T("EM occupied meta size: %lu + %lu\n"), occupied_meta, sizeof(EM));
-    PRINTF(T("EM occupied full size: %lu + %lu\n"), occupied_data + occupied_meta, sizeof(EM));
-    PRINTF(T("EM block count: %lu\n"), len);
+    PRINTF(T("EM occupied data size: %zu\n"), occupied_data);
+    PRINTF(T("EM occupied meta size: %zu + %zu\n"), occupied_meta, sizeof(EM));
+    PRINTF(T("EM occupied full size: %zu + %zu\n"), occupied_data + occupied_meta, sizeof(EM));
+    PRINTF(T("EM block count: %zu\n"), len);
 }
 
 /*

@@ -31,6 +31,11 @@ $(TEST_DIR)/%_silent: $(TEST_DIR)/%.c easy_memory.h $(TEST_DIR)/test_utils.h
 $(TEST_DIR)/%_debug: $(TEST_DIR)/%.c easy_memory.h $(TEST_DIR)/test_utils.h
 	$(CC) $(CFLAGS) $(DEBUG_FLAGS) $< -o $@
 
+# Fallback test to ensure generic min_exponent_of implementation works
+test_fallback:
+	$(CC) $(CFLAGS) -DEM_FORCE_GENERIC tests/validation_test.c -o test_fallback
+	./test_fallback
+
 # --- Coverage Build Steps ---
 # 1. Compile source files into object files with coverage flags
 #    This generates the .gcno files alongside the object files.

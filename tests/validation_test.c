@@ -10,6 +10,26 @@
 #define SSIZE_MAX (SIZE_MAX / 2)
 #endif
 
+void test_min_exponent(void) {
+    TEST_PHASE("min_exponent_of Function");
+
+    EM_ASSERT(min_exponent_of(0) == 0);
+
+    TEST_CASE("Min exponent of powers of two");
+    ASSERT(min_exponent_of(1) == 0, "Min exponent of 1 should be 0");
+    ASSERT(min_exponent_of(2) == 1, "Min exponent of 2 should be 1");
+    ASSERT(min_exponent_of(8) == 3, "Min exponent of 8 should be 3");
+    ASSERT(min_exponent_of(16) == 4, "Min exponent of 16 should be 4");
+    ASSERT(min_exponent_of(32) == 5, "Min exponent of 32 should be 5");
+
+    TEST_CASE("Min exponent of non-powers of two");
+    ASSERT(min_exponent_of(3) == 0, "Min exponent of 3 should be 0"); 
+    ASSERT(min_exponent_of(5) == 0, "Min exponent of 5 should be 0"); 
+    ASSERT(min_exponent_of(6) == 1, "Min exponent of 6 should be 1"); 
+    ASSERT(min_exponent_of(10) == 1, "Min exponent of 10 should be 1");
+    ASSERT(min_exponent_of(12) == 2, "Min exponent of 12 should be 2");
+}
+
 void test_invalid_allocations(void) {
     TEST_PHASE("Invalid Allocation Scenarios");
 
@@ -766,6 +786,7 @@ void test_scratch_em_creation_and_freeing(void) {
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0); 
 
+    test_min_exponent();
     test_invalid_allocations();
     test_invalid_em_creation();
     test_boundary_conditions();

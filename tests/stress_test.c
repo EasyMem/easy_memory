@@ -347,6 +347,50 @@ void test_block_merging(void) {
     #endif // DEBUG
 
     ASSERT(em_get_free_blocks(em) == NULL, "Should not have any free blocks after allocation");
+    
+    em_reset(em);
+    
+    TEST_CASE("Prepare em for two-sided merge test");
+    void *first_block = em_alloc(em, 200);
+    ASSERT(first_block != NULL, "Should successfully allocate after reset");
+
+    void *second_block = em_alloc(em, 200);
+    ASSERT(second_block != NULL, "Should successfully allocate second block after reset");
+    
+    void *third_block = em_alloc(em, 200);
+    ASSERT(third_block != NULL, "Should successfully allocate third block after reset");
+
+    void *fourth_block = em_alloc(em, 200);
+    ASSERT(fourth_block != NULL, "Should successfully allocate fourth block after reset");
+
+    #ifdef DEBUG
+    printf("\nState after allocating 4 consecutive blocks:\n");
+    print_fancy(em, 100);
+    #endif // DEBUG
+
+    TEST_CASE("Freeing first and third blocks");
+    em_free(first_block);
+    em_free(third_block);
+
+    Block *first_block_ = em_get_first_block(em);
+    size_t size_before_merge = get_size(first_block_);
+
+    #ifdef DEBUG
+    printf("\nState after freeing first and third blocks:\n");
+    print_fancy(em, 100);
+    #endif // DEBUG
+
+    TEST_CASE("Freeing second block to trigger two-sided merge");
+    em_free(second_block);
+
+    #ifdef DEBUG
+    printf("\nState after freeing second block (should trigger two-sided merge):\n");
+    print_fancy(em, 100);
+    #endif // DEBUG
+    
+    ASSERT(get_size(first_block_) > size_before_merge, "First block size should increase after two-sided merge");
+    ASSERT(get_size(first_block_) == (3 * size_before_merge + 2 * sizeof(Block)), "First block size should equal combined size of three blocks plus metadata");
+    ASSERT(get_size(em_get_free_blocks(em)) == get_size(first_block_), "Free blocks should point to the merged block");
 
     em_destroy(em);
 }

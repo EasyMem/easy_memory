@@ -93,6 +93,37 @@ void test_nested_creation(void) {
     em_destroy(small_parent);
 }
 
+void test_nested_aligned_creation(void) {
+    TEST_PHASE("Nested EM Aligned Creation");
+
+    TEST_CASE("Create Parent EM with specific alignment");
+    size_t parent_em_size = 8192;
+    EM *parent_em = em_create(parent_em_size);
+    ASSERT(parent_em != NULL, "Parent EM should be created successfully with specific alignment");
+
+    TEST_CASE("Create Nested EM with specific alignment within Parent EM");
+    size_t nested_em_size = 2048;
+    size_t nested_alignment = 128;
+    EM *nested_em = em_create_nested_aligned(parent_em, nested_em_size, nested_alignment);
+    ASSERT(nested_em != NULL, "Nested EM should be created successfully within parent EM with specific alignment");
+    ASSERT((em_get_alignment(nested_em) == nested_alignment), "Nested EM alignment should match requested alignment");
+    
+    void *ptr = em_alloc(nested_em, 256);
+    ASSERT(ptr != NULL, "Allocation from nested EM should succeed");
+    ASSERT((((uintptr_t)ptr) % nested_alignment) == 0, "Allocated pointer from Nested EM should be aligned to requested alignment");
+
+    #ifdef DEBUG
+    print_em(parent_em);
+    print_fancy(parent_em, 100);
+    #endif
+
+    em_destroy(nested_em);
+    ASSERT(true, "Nested EM should be freed successfully");
+
+    em_destroy(parent_em);
+    ASSERT(true, "Parent EM should be freed successfully");
+}
+
 void test_nested_freeing(void) {
     TEST_PHASE("Nested EM Freeing");
 
@@ -138,6 +169,7 @@ int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0); 
 
     test_nested_creation();
+    test_nested_aligned_creation();
     test_nested_freeing();
 
     // Print test summary

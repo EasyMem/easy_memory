@@ -207,10 +207,22 @@ void test_custom_alignment_alloc(void) {
     TEST_PHASE("Custom Alignment Allocation");
 
     size_t custom_alignment = 32;
-    size_t em_size = 2048;
+    size_t em_size = 5000;
     EM *em = em_create(em_size); // Create with default alignment 16
     ASSERT(em != NULL, "EM creation with default alignment should succeed");
     ASSERT(em_get_alignment(em) == EM_DEFAULT_ALIGNMENT, "EM alignment should match default alignment");
+    
+    TEST_CASE("Enforce exact alignment value");
+    Block *first_block = em_get_first_block(em);
+    uintptr_t first_block_addr = (uintptr_t)first_block;
+    uintptr_t end = (first_block_addr + 2 * sizeof(Block) + get_size(first_block));
+    uintptr_t aligned_end = (end + 15) & ~15;  // align up to 16
+    if ((aligned_end % 32) == 0) {
+        aligned_end += 16;
+    }
+
+    size_t shift_size = aligned_end - (first_block_addr + sizeof(Block));
+    void *shift = em_alloc(em, shift_size);
 
     TEST_CASE("Allocate block with custom alignment");
     size_t alloc_size = 128;
@@ -249,6 +261,8 @@ void test_custom_alignment_alloc(void) {
     em_free(block2);
     
     em_free(temp_ptr2);
+
+    em_free(shift);
 
     em_destroy(em);
 }

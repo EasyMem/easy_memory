@@ -261,6 +261,42 @@ void test_custom_alignment_alloc(void) {
 
     em_free(shift);
 
+    #ifdef EM_POISONING
+    TEST_CASE("Verify freed memory is poisoned with 0xDD");
+    void *ptr = em_alloc(em, 64);
+    uintptr_t addr = (uintptr_t)ptr;
+    em_free(ptr);
+
+    unsigned char *bytes = (unsigned char *)addr;
+    bool all_poisoned = true;
+    for (size_t i = 0; i < 64; i++) {
+        if (bytes[i] != 0xDD) {
+            all_poisoned = false;
+            break;
+        }
+    }
+    ASSERT(all_poisoned, "Freed memory should be filled with 0xDD poison pattern");
+    #endif
+
+    #ifdef EM_POISONING
+    TEST_CASE("Verify pointer fields are poisoned");
+
+    typedef struct {
+        void *next;
+        void *data;
+    } TestStruct;
+
+    TestStruct *s = em_alloc(em, sizeof(TestStruct));
+    s->next = (void *)0x12345678;
+    s->data = (void *)0xABCDEF00;
+
+    em_free(s);
+
+    ASSERT(s->next == (void *)(uintptr_t)0xDDDDDDDD || 
+        s->next == (void *)(uintptr_t)0xDDDDDDDDDDDDDDDD, 
+        "Pointer should be poisoned to obviously invalid address");
+    #endif
+
     em_destroy(em);
 }
 

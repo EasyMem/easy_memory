@@ -215,13 +215,11 @@ void test_custom_alignment_alloc(void) {
     TEST_CASE("Enforce exact alignment value");
     Block *first_block = em_get_first_block(em);
     uintptr_t first_block_addr = (uintptr_t)first_block;
-    uintptr_t end = (first_block_addr + 2 * sizeof(Block) + get_size(first_block));
-    uintptr_t aligned_end = (end + 15) & ~15;  // align up to 16
-    if ((aligned_end % 32) == 0) {
-        aligned_end += 16;
+    size_t shift_size = 16;
+    uintptr_t next_user_data = first_block_addr + 2 * sizeof(Block) + shift_size;
+    if ((next_user_data % 32) == 0) {
+        shift_size += 16;
     }
-
-    size_t shift_size = aligned_end - (first_block_addr + sizeof(Block));
     void *shift = em_alloc(em, shift_size);
 
     TEST_CASE("Allocate block with custom alignment");
@@ -229,7 +227,6 @@ void test_custom_alignment_alloc(void) {
     void *block = em_alloc_aligned(em, alloc_size, custom_alignment);
     ASSERT(block != NULL, "Custom aligned allocation should succeed");
     ASSERT(((uintptr_t)block % custom_alignment) == 0, "Allocated block should be aligned to custom alignment");
-
     uintptr_t *spot_before_user_data = (uintptr_t *)((char *)block - sizeof(uintptr_t));
     uintptr_t check = *spot_before_user_data ^ (uintptr_t)block;
     ASSERT(check != (uintptr_t)0xDEADBEEF, "Block should have alignment padding");

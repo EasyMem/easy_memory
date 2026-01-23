@@ -177,6 +177,8 @@ void print_llrb_tree(Block *node, int depth);
 #endif // DEBUG
 
 
+// EM specific functions
+// EM creation functions
 #ifndef EM_NO_MALLOC
 EM *em_create(size_t size);
 EM *em_create_aligned(size_t size, size_t alignment);
@@ -188,15 +190,31 @@ EM *em_create_static_aligned(void *memory, size_t size, size_t alignment);
 EM *em_create_nested(EM *parent_em, size_t size);
 EM *em_create_nested_aligned(EM *parent_em, size_t size, size_t alignment);
 
+EM *em_create_scratch(EM *parent_em, size_t size);
+EM *em_create_scratch_aligned(EM *parent_em, size_t size, size_t alignment);
+
+// EM reset and destroy functions
 void em_reset(EM *em);
 void em_reset_zero(EM *em);
 void em_destroy(EM *em);
+void em_free_scratch(EM *em); // Optional free scratch memory function. Try not to use it. 
+//                               Recommended to call em_free or dedicated em_destroy_* for specific objects. 
+//                               Yes, EM know what blocks\sub-allocators are scratch and can free\destroy them properly. 
 
+// Allocation functions
 void *em_alloc(EM *em, size_t size);
 void *em_alloc_aligned(EM *em, size_t size, size_t alignment);
+
+void *em_alloc_scratch(EM *em, size_t size);
+void *em_alloc_scratch_aligned(EM *em, size_t size, size_t alignment);
+
+// Calloc function
 void *em_calloc(EM *em, size_t nmemb, size_t size);
 void em_free(void *data);
 
+
+
+// Bump allocator specific functions
 Bump *em_create_bump(EM *em, size_t size);
 void *em_bump_alloc(Bump *bump, size_t size);
 void *em_bump_alloc_aligned(Bump *bump, size_t size, size_t alignment);
@@ -214,6 +232,14 @@ void em_bump_destroy(Bump *bump);
  */
 static inline size_t align_up(size_t size, size_t alignment) {
     return (size + alignment - 1) & ~(alignment - 1);
+}
+
+/*
+ * Helper function to Align down
+ * Rounds down the given size to the nearest multiple of alignment
+ */
+static inline size_t align_down(size_t size, size_t alignment) {
+    return size & ~(alignment - 1);
 }
 
 /*
@@ -423,7 +449,7 @@ static inline void set_is_free(Block *block, bool is_free) {
  * Get color flag from block
  * Extracts the color flag stored in the block's prev field
  */
-static inline bool get_color(Block *block) {
+static inline bool get_color(const Block *block) {
     EM_ASSERT((block != NULL) && "Internal Error: 'get_color' called on NULL block");
 
     return ((uintptr_t)block->prev & COLOR_FLAG); // Check the color flag bit
@@ -565,6 +591,46 @@ static inline void set_em(Block *block, EM *em) {
 
 
 
+/*
+ * Check if block is scratch block
+ * Determines if the block is a scratch block based on its color and free status
+ */
+static inline bool get_is_in_scratch(const Block *block) {
+    EM_ASSERT((block != NULL) && "Internal Error: 'get_is_in_scratch' called on NULL block");
+
+    /*
+     * Why are we sure that this 100% scratch block?
+     * Because occupied blocks are always red.
+     * So combination of occupied + black gives us unique state that we use to identify scratch block.
+    */
+
+    return (!get_is_free(block) && get_color(block) == BLACK);
+}
+
+/*
+ * Set block as scratch or non-scratch
+ * Updates the block's status to be a scratch block or not based on the is_scratch parameter
+ */
+static inline void set_is_in_scratch(Block *block, bool is_scratch) {
+    EM_ASSERT((block != NULL) && "Internal Error: 'set_is_in_scratch' called on NULL block");
+
+    /*
+     * Why does that work?
+     * Because occupied blocks are always red.
+     * So combination of occupied + black gives us unique state that we use to identify scratch block.
+    */
+
+    set_is_free(block, !is_scratch); // Set free status based on scratch status
+    if (is_scratch) {
+        set_color(block, BLACK); // Set color to BLACK for scratch blocks
+    }
+    else {
+        set_color(block, RED);   // Set color to RED for non-scratch blocks
+    }
+}
+
+
+
 
 
 /*
@@ -702,8 +768,8 @@ static inline void em_set_padding_bit(EM *em, bool has_padding) {
  * Get has_scratch flag from easy memory
  * Extracts the has_scratch flag stored in the easy memory's as.self.free_blocks field
  */
-static inline bool em_has_scratch(const EM *em) {
-    EM_ASSERT((em != NULL) && "Internal Error: 'em_is_scratch' called on NULL easy memory");
+static inline bool em_get_has_scratch(const EM *em) {
+    EM_ASSERT((em != NULL) && "Internal Error: 'em_get_has_scratch' called on NULL easy memory");
 
     return ((uintptr_t)em->as.self.free_blocks & HAS_SCRATCH_FLAG); // Check the is_scratch flag bit
 }
@@ -943,7 +1009,18 @@ static inline size_t free_size_in_tail(const EM *em) {
 
     size_t occupied_relative_to_em = (uintptr_t)tail + sizeof(Block) + get_size(tail) - (uintptr_t)em;
     
-    return em_get_capacity(em) - occupied_relative_to_em; // Calculate free size in tail
+    size_t em_capacity = em_get_capacity(em);
+
+    if (em_get_has_scratch(em)) {
+        uintptr_t raw_end = (uintptr_t)em + em_capacity;
+        uintptr_t aligned_end = align_down(raw_end, MIN_ALIGNMENT);
+
+        size_t *stored_size_ptr = (size_t*)(aligned_end - sizeof(uintptr_t));
+
+        em_capacity -= *stored_size_ptr; // Reduce capacity by scratch size
+    }
+
+    return em_capacity - occupied_relative_to_em; // Calculate free size in tail
 }
 
 /*
@@ -1420,6 +1497,12 @@ static inline void split_block(EM *em, Block *block, size_t needed_size) {
  * Uses neighbor-borrowing or the LSB Padding Detector to find the header.
  */
 static inline EM *get_parent_em(Block *block) {
+    EM_ASSERT((block != NULL) && "Internal Error: 'get_parent_em' called on NULL block");
+
+    if (get_is_in_scratch(block)) {
+        return (EM *)get_prev(block); 
+    }
+
     Block *prev = block;
     
     /*
@@ -1470,6 +1553,15 @@ static inline EM *get_parent_em(Block *block) {
 static void em_free_block_full(EM *em, Block *block) {
     EM_ASSERT((em != NULL)    && "Internal Error: 'em_free_block_full' called on NULL em");
     EM_ASSERT((block != NULL) && "Internal Error: 'em_free_block_full' called on NULL block");
+
+    #ifdef EM_POISONING
+    memset(block_data(block), EM_POISON_BYTE, get_size(block));
+    #endif
+
+    if (get_is_in_scratch(block)) {
+        em_free_scratch(em);
+        return;
+    }
 
     set_is_free(block, true);
     set_left_tree(block, NULL);
@@ -1568,6 +1660,7 @@ static void *alloc_in_free_blocks(EM *em, size_t size, size_t alignment) {
 
     set_em(block, em);
     set_magic(block, (void *)aligned_ptr);
+    set_color(block, RED);
 
     return (void *)aligned_ptr;
 }
@@ -1674,6 +1767,7 @@ static void *alloc_in_tail_full(EM *em, size_t size, size_t alignment) {
     set_size(tail, final_needed_block_size);
     set_is_free(tail, false);
     set_magic(tail, (void *)aligned_data_ptr);
+    set_color(tail, RED);
     set_em(tail, em);
 
     // If there is remaining free space, create a new free block
@@ -1688,6 +1782,17 @@ static void *alloc_in_tail_full(EM *em, size_t size, size_t alignment) {
 
 
 
+
+/*
+ * Free scratch memory in easy memory
+ * Marks the scratch memory as free
+ */
+void em_free_scratch(EM *em) {
+    if (!em || !em_get_has_scratch(em)) return;
+
+    em_set_has_scratch(em, false);
+    // Yeah it is that simple
+}
 
 /*
  * Free a block of memory in the easy memory
@@ -1736,13 +1841,8 @@ void em_free(void *data) {
     EM *em = get_em(block);
     
     EM_ASSERT((em != NULL) && "Internal Error: 'em_free' detected block with NULL em");
-    
-    // If block is out of em bounds, it's invalid
-    if (!is_block_within_em(em, block)) return;
 
-    #ifdef EM_POISONING
-    memset(block_data(block), EM_POISON_BYTE, get_size(block));
-    #endif
+    if (!is_block_within_em(em, block)) return;
 
     em_free_block_full(em, block);
 }
@@ -1751,7 +1851,7 @@ void em_free(void *data) {
  * Allocate memory in the easy memory with custom alignment
  * Returns NULL if there is not enough space
  */
-void *em_alloc_custom(EM *em, size_t size, size_t alignment) {
+void *em_alloc_aligned(EM *em, size_t size, size_t alignment) {
     if (!em || size == 0 || size > em_get_capacity(em)) return NULL;
     if ((alignment & (alignment - 1)) != 0) return NULL;
     if (alignment < MIN_ALIGNMENT || alignment > MAX_ALIGNMENT) return NULL;
@@ -1770,7 +1870,61 @@ void *em_alloc_custom(EM *em, size_t size, size_t alignment) {
  */
 void *em_alloc(EM *em, size_t size) {
     if (!em) return NULL;
-    return em_alloc_custom(em, size, em_get_alignment(em));
+    return em_alloc_aligned(em, size, em_get_alignment(em));
+}
+
+/*
+ * Allocate scratch memory in the physical end of easy memory with custom alignment
+ * Returns NULL if there is not enough space or scratch memory is already allocated
+ */
+void *em_alloc_scratch_aligned(EM *em, size_t size, size_t alignment) {
+    if (!em || size == 0 || em_get_has_scratch(em) || size > em_get_capacity(em)) return NULL;
+    if ((alignment & (alignment - 1)) != 0) return NULL;
+    if (alignment < MIN_ALIGNMENT || alignment > MAX_ALIGNMENT) return NULL;
+    if (size > free_size_in_tail(em)) return NULL;
+
+    uintptr_t raw_end_of_em = (uintptr_t)em + em_get_capacity(em);
+    uintptr_t end_of_em = raw_end_of_em;
+    end_of_em = align_down(end_of_em, MIN_ALIGNMENT);
+    
+    end_of_em -= sizeof(uintptr_t);
+    uintptr_t scratch_size_spot = end_of_em;
+
+    uintptr_t scratch_data_spot = end_of_em - size;
+    scratch_data_spot = align_down(scratch_data_spot, alignment);
+
+    uintptr_t block_metadata_spot = scratch_data_spot - sizeof(Block);
+
+    Block *tail = em_get_tail(em);
+    EM_ASSERT((tail != NULL)      && "Internal Error: 'em_alloc_scratch_aligned' called on NULL tail");
+    EM_ASSERT((get_is_free(tail)) && "Internal Error: 'em_alloc_scratch_aligned' called on non free tail");
+
+    if (block_metadata_spot < (uintptr_t)tail + sizeof(Block) + get_size(tail)) return NULL;
+
+    size_t scratch_size = scratch_size_spot - scratch_data_spot;
+
+    Block *scratch_block = create_block((void *)block_metadata_spot);
+    set_size(scratch_block, scratch_size);
+    set_is_free(scratch_block, false);
+    set_magic(scratch_block, (void *)scratch_data_spot);
+    set_em(scratch_block, em);
+    set_is_in_scratch(scratch_block, true);
+    
+    uintptr_t *size_spot = (uintptr_t *)scratch_size_spot;
+    *size_spot = raw_end_of_em - block_metadata_spot;
+
+    em_set_has_scratch(em, true);
+
+    return (void *)scratch_data_spot;
+}
+
+/*
+ * Allocate scratch memory in the physical end of easy memory with default alignment
+ * Returns NULL if there is not enough space or scratch memory is already allocated
+ */
+void *em_alloc_scratch(EM *em, size_t size) {
+    if (!em) return NULL;
+    return em_alloc_scratch_aligned(em, size, em_get_alignment(em));
 }
 
 /*
@@ -1954,6 +2108,7 @@ void em_reset(EM *em) {
     // Reset easy memory metadata
     em_set_free_blocks(em, NULL);
     em_set_tail(em, first_block);
+    em_set_has_scratch(em, false);
 }
 
 /*
@@ -2008,6 +2163,41 @@ EM *em_create_nested(EM *parent_em, size_t size) {
 
     return em_create_nested_aligned(parent_em, size, em_get_alignment(parent_em));
 }
+
+/*
+ * Create a scratch nested easy memory with custom alignment
+ * Allocates scratch memory for a nested easy memory from a parent easy memory and initializes it
+ * Returns NULL if the parent easy memory is NULL, requested size is too small, or allocation fails
+ */
+EM *em_create_scratch_aligned(EM *parent_em, size_t size, size_t alignment) {
+    if (!parent_em || em_get_has_scratch(parent_em) || size < BLOCK_MIN_SIZE || size > SIZE_MASK) return NULL;
+    if ((alignment & (alignment - 1)) != 0) return NULL;
+    if (alignment < MIN_ALIGNMENT|| alignment > MAX_ALIGNMENT) return NULL;
+    
+    void *data = em_alloc_scratch_aligned(parent_em, size, alignment);  // Allocate memory from the parent easy memory scratch
+    if (!data) return NULL;
+
+    Block *block = (Block *)(void *)((char *)data - sizeof(Block)); // Scratch block is always with no padding before user data
+    set_prev(block, parent_em); // Scratch block has no previous block so we use prev pointer to store parent EM pointer
+
+    EM *em = em_create_static_aligned((void *)block, size, alignment);
+    em_set_is_nested(em, true); // Mark the easy memory as nested
+
+    return em;
+}
+
+/*
+ * Create a scratch nested easy memory with alignment of parent easy memory
+ * Allocates scratch memory for a nested easy memory from a parent easy memory and initializes it
+ * Returns NULL if the parent easy memory is NULL, requested size is too small, or allocation fails
+ */
+EM *em_create_scratch(EM *parent_em, size_t size) {
+    if (!parent_em) return NULL;
+    return em_create_scratch_aligned(parent_em, size, em_get_alignment(parent_em));
+}
+
+
+
 
 
 /*

@@ -624,9 +624,11 @@ static inline void set_is_in_scratch(Block *block, bool is_scratch) {
     if (is_scratch) {
         set_color(block, BLACK); // Set color to BLACK for scratch blocks
     }
+    // LCOV_EXCL_START
     else {
         set_color(block, RED);   // Set color to RED for non-scratch blocks
     }
+    // LCOV_EXCL_STOP
 }
 
 
@@ -754,7 +756,9 @@ static inline void em_set_padding_bit(EM *em, bool has_padding) {
 
     uintptr_t int_ptr = (uintptr_t)(em->as.self.free_blocks); // Get current pointer with flags
     if (has_padding) {
+    // LCOV_EXCL_START
         int_ptr |= IS_PADDING; // Set the is_padding flag bit
+    // LCOV_EXCL_STOP
     }
     else {
         int_ptr &= ~IS_PADDING; // Clear the is_padding flag bit

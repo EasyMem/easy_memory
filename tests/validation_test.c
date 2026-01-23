@@ -253,6 +253,18 @@ void test_freeing_invalid_blocks(void) {
     em_free(fake_data); // Should not crash
     ASSERT(true, "Freeing block with valid magic number should not crash");
 
+    em_reset(em);
+    Block *first_block = em_get_first_block(em);
+    Block *free_blocks = em_get_free_blocks(em);
+
+    TEST_CASE("Freeing a pointer with invalid alignment");
+    void *misaligned_ptr = (void *)((uintptr_t)em + 1);
+    em_free(misaligned_ptr); // Should not crash
+    ASSERT(true, "Freeing misaligned pointer should not crash");
+    ASSERT(em_get_first_block(em) == first_block, "First block should remain unchanged after misaligned free");
+    ASSERT(em_get_free_blocks(em) == free_blocks, "Free blocks should remain unchanged after misaligned free");
+
+
     TEST_CASE("Freeing a pointer from a different em");
     EM *another_em = em_create(1024);
     void *ptr = em_alloc(another_em, 32);

@@ -54,4 +54,4 @@ jobs:
           platforms: ${{ matrix.platform }}
           push: true
           build-args: BASE_IMAGE=${{ matrix.base_img }}
-          tags: ghcr.io/${{ github.repository_owner }}/easy_memory:${{ matrix.tag_suffix }}
+          tags: ghcr.io/easymem/easy_memory:${{ matrix.tag_suffix }}

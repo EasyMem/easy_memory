@@ -203,6 +203,56 @@ void test_full_em_allocation(void) {
     em_destroy(em);
 }
 
+void test_custom_alignment_alloc(void) {
+    TEST_PHASE("Custom Alignment Allocation");
+
+    size_t custom_alignment = 32;
+    size_t em_size = 2048;
+    EM *em = em_create(em_size); // Create with default alignment 16
+    ASSERT(em != NULL, "EM creation with default alignment should succeed");
+    ASSERT(em_get_alignment(em) == EM_DEFAULT_ALIGNMENT, "EM alignment should match default alignment");
+
+    TEST_CASE("Allocate block with custom alignment");
+    size_t alloc_size = 128;
+    void *block = em_alloc_aligned(em, alloc_size, custom_alignment);
+    ASSERT(block != NULL, "Custom aligned allocation should succeed");
+    ASSERT(((uintptr_t)block % custom_alignment) == 0, "Allocated block should be aligned to custom alignment");
+
+    uintptr_t *spot_before_user_data = (uintptr_t *)((char *)block - sizeof(uintptr_t));
+    uintptr_t check = *spot_before_user_data ^ (uintptr_t)block;
+    ASSERT(check != (uintptr_t)0xDEADBEEF, "Block should have alignment padding");
+    ASSERT(check % sizeof(uintptr_t) == 0, "Retrieved block pointer should be properly aligned");
+    Block *block_meta = (Block *)check;
+    ASSERT(block_meta != NULL, "Retrieved block metadata should not be NULL");
+    ASSERT(get_em(block_meta) == em, "Block`s EM pointer should match the allocating EM");
+    em_free(block);
+
+    TEST_CASE("Allocate another block with custom alignment after fragmentation");
+    void *temp_ptr = em_alloc(em, 256); // Allocate some more to fragment the EM
+    ASSERT(temp_ptr != NULL, "Temporary allocation should succeed");
+    void *temp_ptr2 = em_alloc(em, 64);
+    ASSERT(temp_ptr2 != NULL, "Second temporary allocation should succeed");
+
+    em_free(temp_ptr);
+
+    void *block2 = em_alloc_aligned(em, alloc_size, custom_alignment);
+    ASSERT(block2 != NULL, "Custom aligned allocation after fragmentation should succeed");
+    ASSERT(((uintptr_t)block2 % custom_alignment) == 0, "Allocated block should be aligned to custom alignment");
+    spot_before_user_data = (uintptr_t *)((char *)block2 - sizeof(uintptr_t));
+    check = *spot_before_user_data ^ (uintptr_t)block2;
+    ASSERT(check != (uintptr_t)0xDEADBEEF, "Block should have alignment padding");
+    ASSERT(check % sizeof(uintptr_t) == 0, "Retrieved block pointer should be properly aligned");
+    
+    Block *block2_meta = (Block *)check;
+    ASSERT(block2_meta != NULL, "Retrieved block2 metadata should not be NULL");
+    ASSERT(get_em(block2_meta) == em, "Block2`s EM pointer should match the allocating EM");
+    em_free(block2);
+    
+    em_free(temp_ptr2);
+
+    em_destroy(em);
+}
+
 void test_static_em_creation(void) {
     TEST_PHASE("Static EM Creation");
 
@@ -803,6 +853,7 @@ int main(void) {
     test_invalid_em_creation();
     test_boundary_conditions();
     test_full_em_allocation();
+    test_custom_alignment_alloc();
     test_static_em_creation();
     test_freeing_invalid_blocks();
     test_calloc();

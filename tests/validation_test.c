@@ -615,6 +615,153 @@ void test_tail_alloc_edge_case_deterministic(void) {
     ASSERT(p2 != NULL, "This should trigger the 'final_needed_block_size = free_space' branch");
 }
 
+void test_scratch_allocation_and_freeing(void) {
+    TEST_PHASE("Scratch EM Allocation and Freeing");
+
+    TEST_CASE("Create EM and allocate scratch EM");
+    EM *em = em_create(2048);
+    ASSERT(em != NULL, "EM creation should succeed");
+    size_t free_in_tail = free_size_in_tail(em);
+
+    #ifdef DEBUG
+    print_fancy(em, 100);
+    print_em(em);
+    #endif
+
+    size_t scratch_size = 512;
+    void *ptr = em_alloc_scratch(em, scratch_size);
+    ASSERT(ptr != NULL, "Scratch allocationshould succeed");
+    ASSERT(free_size_in_tail(em) <= free_in_tail - scratch_size, "EM free size should decrease after scratch allocation");
+
+    #ifdef DEBUG
+    print_fancy(em, 100);
+    #endif
+
+    TEST_CASE("Try to allocate too large chunk");
+    void *large_ptr = em_alloc(em, 2048-512);
+    ASSERT(large_ptr == NULL, "Oversized allocation should fail");
+
+    TEST_CASE("Allocate small chunk after scratch");
+    void *small_ptr = em_alloc(em, 128);
+    ASSERT(small_ptr != NULL, "Small allocation should succeed after scratch allocation");
+
+    em_free(small_ptr);
+
+    TEST_CASE("Free scratch block");
+    em_free(ptr);
+    ASSERT(free_size_in_tail(em) == free_in_tail, "EM free size should restore after freeing scratch block");
+
+    #ifdef DEBUG
+    print_fancy(em, 100);
+    print_em(em);
+    #endif
+
+    TEST_CASE("Try allocate big chunk after freeing scratch");
+    void *large_ptr2 = em_alloc(em, (2048-512));
+    ASSERT(large_ptr2 != NULL, "Big allocation should succeed");
+
+    #ifdef DEBUG
+    print_fancy(em, 100);
+    print_em(em);
+    #endif
+
+    TEST_CASE("Allocation with alignment");
+    void *aligned_ptr = em_alloc_scratch_aligned(em, 128, 64);
+    ASSERT(aligned_ptr != NULL, "Aligned scratch allocation should succeed");
+    ASSERT(((uintptr_t)aligned_ptr % 64) == 0, "Aligned scratch allocation should meet alignment requirement");
+    
+    #ifdef DEBUG
+    print_fancy(em, 100);
+    print_em(em);
+    #endif
+    
+    em_free(aligned_ptr);
+
+    em_destroy(em);
+}
+
+void test_invalid_scratch_allocation(void) {
+    TEST_PHASE("Invalid Scratch Allocation Scenarios");
+
+    // Create an EM
+    EM *em = em_create(1024);
+    ASSERT(em != NULL, "EM creation should succeed");
+
+    TEST_CASE("Zero size scratch allocation");
+    void *zero_size = em_alloc_scratch(em, 0);
+    ASSERT(zero_size == NULL, "Zero size scratch allocation should return NULL");
+
+    TEST_CASE("Negative size scratch allocation");
+    void *negative_size = em_alloc_scratch(em, -1);
+    ASSERT(negative_size == NULL, "Negative size scratch allocation should return NULL");
+
+    TEST_CASE("NULL EM scratch allocation");
+    void *null_em = em_alloc_scratch(NULL, 32);
+    ASSERT(null_em == NULL, "Scratch allocation with NULL EM should return NULL");
+
+    TEST_CASE("Scratch allocation larger than EM size");
+    void *huge_scratch_allocation = em_alloc_scratch(em, 2048);
+    ASSERT(huge_scratch_allocation == NULL, "Scratch allocation larger than EM size should fail");
+
+    TEST_CASE("Alignment larger than MAX_ALIGNMENT");
+    void *bad_align_alloc = em_alloc_scratch_aligned(em, 32, 32 + MAX_ALIGNMENT);
+    ASSERT(bad_align_alloc == NULL, "Scratch allocation with alignment larger than MAX_ALIGNMENT should fail");
+
+    TEST_CASE("Invalid alignment (not power of two)");
+    void *invalid_align_alloc = em_alloc_scratch_aligned(em, 32, 3);
+    ASSERT(invalid_align_alloc == NULL, "Scratch allocation with invalid alignment should fail");
+
+    em_destroy(em);
+}
+
+void test_scratch_em_creation_and_freeing(void) {
+    TEST_PHASE("Scratch EM Creation and Freeing");
+
+    TEST_CASE("Create scratch EM from valid EM");
+    EM *em = em_create(2048);
+    ASSERT(em != NULL, "EM creation should succeed");
+    size_t initial_free = free_size_in_tail(em);
+
+    size_t scratch_em_size = 512;
+    EM *scratch_em = em_create_scratch(em, scratch_em_size);
+    ASSERT(scratch_em != NULL, "Scratch EM creation should succeed");
+    ASSERT(free_size_in_tail(em) <= 2048 - scratch_em_size, "EM free size should decrease after scratch EM creation");
+
+    TEST_CASE("Allocate from scratch EM");
+    void *scratch_alloc = em_alloc(scratch_em, 256);
+    ASSERT(scratch_alloc != NULL, "Allocation from scratch EM should succeed");
+
+    TEST_CASE("Free scratch EM");
+    em_destroy(scratch_em);
+    ASSERT(free_size_in_tail(em) == initial_free, "EM free size should restore after freeing scratch EM");
+
+    TEST_CASE("Attempt to create oversized scratch EM");
+    EM *oversized_scratch_em = em_create_scratch(em, 4096);
+    ASSERT(oversized_scratch_em == NULL, "Oversized scratch EM creation should fail");
+
+    TEST_CASE("Attempt to create scratch EM from NULL EM");
+    EM *null_scratch_em = em_create_scratch(NULL, 256);
+    ASSERT(null_scratch_em == NULL, "Scratch EM creation from NULL EM should fail");
+
+    TEST_CASE("Attempt to create scratch EM with zero size");
+    EM *zero_size_scratch_em = em_create_scratch(em, 0);
+    ASSERT(zero_size_scratch_em == NULL, "Scratch EM creation with zero size should fail");
+
+    TEST_CASE("Attempt to create scratch EM with negative size");
+    EM *negative_size_scratch_em = em_create_scratch(em, -1);
+    ASSERT(negative_size_scratch_em == NULL, "Scratch EM creation with negative size should fail");
+
+    TEST_CASE("Attempt to create scratch EM with custom alignment");
+    EM *custom_align_scratch_em = em_create_scratch_aligned(em, 256, 32);
+    ASSERT(custom_align_scratch_em != NULL, "Scratch EM creation with custom alignment should succeed");
+    em_destroy(custom_align_scratch_em);
+
+    TEST_CASE("Attempt to create scratch EM with invalid alignment");
+    EM *invalid_align_scratch_em = em_create_scratch_aligned(em, 256, 3);
+    ASSERT(invalid_align_scratch_em == NULL, "Scratch EM creation with invalid alignment should fail");
+
+    em_destroy(em);
+}
 
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0); 
@@ -630,6 +777,9 @@ int main(void) {
     test_alignment_alloc();
     test_static_em_detector_coverage();
     test_tail_alloc_edge_case_deterministic();
+    test_scratch_allocation_and_freeing();
+    test_invalid_scratch_allocation();
+    test_scratch_em_creation_and_freeing();
     
     print_test_summary();
     return tests_failed > 0 ? 1 : 0;

@@ -10,11 +10,9 @@ on:
       - '.github/workflows/ci.yml'
   pull_request:
     branches: [ "main", "master" ]
-    paths:
-      - 'easy_memory.h'
-      - 'Makefile'
-      - 'tests/**'
-      - '.github/workflows/ci.yml'
+
+env:
+  REGISTRY_IMAGE_BASE: ghcr.io/easymem/easy_memory
 
 jobs:
   # Job 1: Build and test on primary x86_64 platforms
@@ -114,96 +112,73 @@ jobs:
       - name: Build and Test in 32-bit mode
         run: make tests CC="gcc -m32"
 
-  # Job 3: Build and test on modern ARM64 (aarch64) - forgiving alignment
+  # Job 3: Modern ARM64
   build-and-test-arm64-modern:
-    name: Ubuntu | ARM64 (Modern, Forgiving Alignment) | GCC
+    name: Ubuntu | ARM64 (Modern) | GCC
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      - name: Set up QEMU for ARM emulation
-        uses: docker/setup-qemu-action@v3
-      - name: Build and Test in ARM64 Docker container
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      
+      - name: Test in ARM64 Container
         run: |
-          docker run --rm --platform linux/arm64 -v ${{ github.workspace }}:/workspace -w /workspace arm64v8/ubuntu:latest \
-          sh -c " \
-            apt-get update && \
-            apt-get install -y build-essential gcc make && \
-            make tests_full CC=gcc \
-          "
+          # Используем готовый образ. Никаких apt install.
+          docker run --rm --platform linux/arm64 \
+            -v ${{ github.workspace }}:/workspace \
+            -w /workspace \
+            ${{ env.REGISTRY_IMAGE_BASE }}:arm64 \
+            make tests_full CC=gcc
 
-  # Job 4: Build and test on strict ARM64 (aarch64) - unaligned access will CRASH
+  # Job 4: Strict ARM64
   build-and-test-arm64-strict:
-    name: Ubuntu | ARM64 (Strict Alignment via UBSan) | GCC
+    name: Ubuntu | ARM64 (Strict Alignment) | GCC
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      - name: Set up QEMU for ARM emulation
-        uses: docker/setup-qemu-action@v3
-      - name: Build and Test in Strict ARM64 Docker container
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      
+      - name: Test in Strict ARM64 Container
         run: |
           docker run --rm --platform linux/arm64 \
             -v ${{ github.workspace }}:/workspace \
             -w /workspace \
             --env UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
-            arm64v8/ubuntu:latest \
-            sh -c " \
-              echo '--- Installing dependencies ---' && \
-              apt-get update -y && \
-              apt-get install -y build-essential gcc make && \
-              \
-              echo '--- Building and running tests with UBSan for alignment ---' && \
-              make tests_full CC='gcc -g -fsanitize=alignment' \
-            "
+            ${{ env.REGISTRY_IMAGE_BASE }}:arm64 \
+            make tests_full CC='gcc -g -fsanitize=alignment'
 
-  # Job 5: Build and test on Big Endian architecture (s390x)
+  # Job 5: Big Endian (s390x)
   build-and-test-big-endian:
     name: Ubuntu | Big Endian (s390x) | GCC
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      - name: Set up QEMU for s390x emulation
-        uses: docker/setup-qemu-action@v3
-      - name: Build and Test in Big Endian (s390x) Docker container
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      
+      - name: Test in s390x Container
         run: |
           docker run --rm --platform linux/s390x \
             -v ${{ github.workspace }}:/workspace \
             -w /workspace \
-            s390x/ubuntu:latest \
-            sh -c " \
-              echo '--- Installing dependencies for s390x ---' && \
-              apt-get update -y && \
-              apt-get install -y build-essential gcc make && \
-              \
-              echo '--- Building and running tests on Big Endian ---' && \
-              make tests_full CC=gcc \
-            "
+            ${{ env.REGISTRY_IMAGE_BASE }}:s390x \
+            make tests_full CC=gcc
 
-  # Job 6: Build and test on 32-bit ARM (armv7)
+  # Job 6: ARM32
   build-and-test-arm32:
     name: Ubuntu | ARM32 (armv7) | GCC
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      - name: Set up QEMU for ARM32 emulation
-        uses: docker/setup-qemu-action@v3
-      - name: Build and Test in ARM32 (armv7) Docker container
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      
+      - name: Test in ARM32 Container
         run: |
           docker run --rm --platform linux/arm/v7 \
             -v ${{ github.workspace }}:/workspace \
             -w /workspace \
-            arm32v7/ubuntu:latest \
-            sh -c " \
-              echo '--- Installing dependencies for ARM32 ---' && \
-              apt-get update -y && \
-              apt-get install -y build-essential gcc make && \
-              \
-              echo '--- Building and running tests on ARM32 ---' && \
-              make tests_full CC=gcc \
-            "
+            ${{ env.REGISTRY_IMAGE_BASE }}:arm32 \
+            make tests_full CC=gcc
+
+  # Job 7: Test various C standards
   build-and-test-C-stds:
     name: Build & Test (${{ matrix.os }}, ${{ matrix.std }})
     runs-on: ${{ matrix.os }}

@@ -178,38 +178,42 @@ typedef struct Bump  Bump;
  * 
  * Behavior depends on defined macros:
  * 1. GCC or Clang:
- *    Uses __attribute__ syntax for malloc, warn_unused_result, and alloc_size.
+ *    Uses __attribute__ syntax. Takes index arguments, ignores name arguments.
  * 
  * 2. MSVC:
- *    Uses __declspec syntax where applicable.
+ *    Uses __declspec and SAL annotations. Takes name arguments, ignores index arguments.
+ *    Requires <sal.h>.
  * 
  * 3. Other Compilers:
- *    Attributes are defined as empty, effectively disabling them.
+ *    Attributes are defined as empty.
  */
+#if defined(_MSC_VER)
+#   include <sal.h>
+#endif
+
 #ifndef EM_ATTR_MALLOC
 #   if defined(__GNUC__) || defined(__clang__)
         // GCC / Clang
-        // Tells optimizer that the function returns a pointer to a unique memory area (no alias).
-#       define EM_ATTR_MALLOC __attribute__((malloc))
-        // Warns if the caller ignores the return value (prevents memory leaks).
-#       define EM_ATTR_WARN_UNUSED __attribute__((warn_unused_result))
-        // Tells compiler which argument contains the size (for buffer overflow detection).
-#       define EM_ATTR_ALLOC_SIZE(x) __attribute__((alloc_size(x)))
-#       define EM_ATTR_ALLOC_SIZE2(x, y) __attribute__((alloc_size(x, y)))
+        #define EM_ATTR_MALLOC __attribute__((malloc))
+        #define EM_ATTR_WARN_UNUSED __attribute__((warn_unused_result))
+        // GCC uses argument INDICES (1-based)
+        #define EM_ATTR_ALLOC_SIZE(idx, name) __attribute__((alloc_size(idx)))
+        #define EM_ATTR_ALLOC_SIZE2(idx1, idx2, name1, name2) __attribute__((alloc_size(idx1, idx2)))
 #   elif defined(_MSC_VER)
         // MSVC (Windows)
-        // __declspec(restrict) is the equivalent of attribute((malloc)) for optimization.
-#       define EM_ATTR_MALLOC __declspec(restrict)
-        // MSVC requires SAL annotations for warn_unused/alloc_size, omitted here to stay header-only dependency-free.
-#       define EM_ATTR_WARN_UNUSED
-#       define EM_ATTR_ALLOC_SIZE(x)
-#       define EM_ATTR_ALLOC_SIZE2(x, y)
+        #define EM_ATTR_MALLOC __declspec(restrict) _Ret_maybenull_
+        #define EM_ATTR_WARN_UNUSED _Check_return_
+        // MSVC uses argument NAMES.
+        // We use _Post_writable_byte_size_ to tell static analysis how much memory is valid.
+        #define EM_ATTR_ALLOC_SIZE(idx, name) _Post_writable_byte_size_(name)
+        // For calloc-like logic, we can multiply names directly in SAL
+        #define EM_ATTR_ALLOC_SIZE2(idx1, idx2, name1, name2) _Post_writable_byte_size_((name1) * (name2))
 #   else
-        // Unknown Compiler -> No-op
-#       define EM_ATTR_MALLOC
-#       define EM_ATTR_WARN_UNUSED
-#       define EM_ATTR_ALLOC_SIZE(x)
-#       define EM_ATTR_ALLOC_SIZE2(x, y)
+        // Unknown Compiler
+        #define EM_ATTR_MALLOC
+        #define EM_ATTR_WARN_UNUSED
+        #define EM_ATTR_ALLOC_SIZE(idx, name)
+        #define EM_ATTR_ALLOC_SIZE2(idx1, idx2, name1, name2)
 #   endif
 #endif
 
@@ -519,20 +523,20 @@ EMDEF void em_free_scratch(EM *em); // Optional free scratch memory function. Tr
 
 
 // --- Allocation Core ---
-EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED EM_ATTR_ALLOC_SIZE(2) 
+EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED EM_ATTR_ALLOC_SIZE(2, size) 
 void *em_alloc(EM *EM_RESTRICT em, size_t size);
 
-EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED EM_ATTR_ALLOC_SIZE(2) 
+EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED EM_ATTR_ALLOC_SIZE(2, size) 
 void *em_alloc_aligned(EM *EM_RESTRICT em, size_t size, size_t alignment);
 
-EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED EM_ATTR_ALLOC_SIZE(2) 
+EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED EM_ATTR_ALLOC_SIZE(2, size) 
 void *em_alloc_scratch(EM *EM_RESTRICT em, size_t size);
 
-EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED EM_ATTR_ALLOC_SIZE(2) 
+EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED EM_ATTR_ALLOC_SIZE(2, size) 
 void *em_alloc_scratch_aligned(EM *EM_RESTRICT em, size_t size, size_t alignment);
 
 // --- Calloc ---
-EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED EM_ATTR_ALLOC_SIZE2(2, 3) 
+EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED EM_ATTR_ALLOC_SIZE2(2, 3, nmemb, size) 
 void *em_calloc(EM *EM_RESTRICT em, size_t nmemb, size_t size);
 
 // --- Free ---
@@ -544,10 +548,10 @@ EMDEF void em_free(void *data);
 EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED
 Bump *em_create_bump(EM *EM_RESTRICT em, size_t size);
 
-EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED EM_ATTR_ALLOC_SIZE(2)
+EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED EM_ATTR_ALLOC_SIZE(2, size)
 void *em_bump_alloc(Bump *EM_RESTRICT bump, size_t size);
 
-EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED EM_ATTR_ALLOC_SIZE(2) 
+EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED EM_ATTR_ALLOC_SIZE(2, size) 
 void *em_bump_alloc_aligned(Bump *EM_RESTRICT bump, size_t size, size_t alignment);
 
 EMDEF void em_bump_trim(Bump *EM_RESTRICT bump);

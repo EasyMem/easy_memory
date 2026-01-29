@@ -1,22 +1,54 @@
 #ifndef EASY_MEMORY_H
 #define EASY_MEMORY_H
 
+/*
+ * Easy Memory Allocator (easy_memory.h)
+ * A lightweight, efficient memory allocator for C programs.
+ * Features:
+    - Dynamic and static memory arenas
+    - Nested arenas for hierarchical memory management
+    - Bump allocator for fast linear allocations
+    - Scratchpad allocations for temporary memory usage
+    - Free block management using Left-Leaning Red-Black (LLRB) trees
+ * Configurable via macros for assertions, poisoning, and static linkage.
+ * Suitable for embedded systems, game development, and performance-critical applications.
+ * Author: gooderfreed
+ * License: MIT
+*/
+
+/*
+ * Configuration: C++ Compatibility Wrapper
+ * Ensures the header can be included in both C and C++ projects without linkage issues.
+*/
 #ifdef __cplusplus
 extern "C" {
 #endif
-
 
 #include <stdbool.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <stddef.h>
 
+// Structure type forward declarations
+typedef struct Block Block;
+typedef struct EM    EM;
+typedef struct Bump  Bump;
 
 #if defined(_MSC_VER)
 #include <intrin.h>
 #endif
 
-
+/*
+ * Configuration: Static Assertions
+ * 
+ * Behavior depends on defined macros:
+ * 1. C11 or C++11 and above:
+ *    Uses standard static_assert.
+ * 
+ * 2. Pre-C11/C++11:
+ *    Uses a typedef trick to create a compile-time error on failure.
+*/
 #if (defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L) || defined(__cplusplus)
 #   include <assert.h>
 #   define EM_STATIC_ASSERT(cond, msg) static_assert(cond, #msg)
@@ -25,27 +57,177 @@ extern "C" {
 #   define EM_STATIC_ASSERT(cond, msg) EM_STATIC_ASSERT_HELPER(cond, __LINE__)
 #endif
 
-    
-#ifdef DEBUG
-    #include <assert.h>
-    #define EM_ASSERT(cond) assert(cond)
-#else
-    #if defined(__GNUC__) || defined(__clang__)
-        #define EM_ASSERT(cond) do { if (!(cond)) __builtin_unreachable(); } while(0)
-    #elif defined(_MSC_VER)
-        #define EM_ASSERT(cond) __assume(cond)
-    #else
-        #define EM_ASSERT(cond) ((void)0)
-    #endif
+/*
+ * Configuration: EMDEF Macro
+ * Controls the linkage of the Easy Memory functions.
+ * 
+ * Behavior depends on defined macros:
+ * 1. EM_STATIC:
+ *    Functions are declared as static, limiting their visibility to the current translation unit.
+ * 
+ * 2. Default (None of the above):
+ *    Functions are declared as extern, allowing linkage across multiple translation units.
+*/ 
+#ifndef EMDEF
+#   ifdef EM_STATIC
+#       define EMDEF static
+#   else
+#       define EMDEF extern
+#   endif
 #endif
 
-
-#ifndef EM_POISON_BYTE
-#   define EM_POISON_BYTE 0xDD
+/*
+ * Configuration: Assertions
+ * 
+ * Behavior depends on defined macros:
+ * 1. DEBUG or _DEBUG: 
+ *    Standard C assert(). Aborts and prints file/line on failure.
+ * 
+ * 2. EM_ASSERT_PANIC:
+ *    Hardened Release. Calls abort() on failure. 
+ *    Recommended for security-critical environments to prevent heap exploitation.
+ * 
+ * 3. EM_ASSERT_OPTIMIZE:
+ *    Performance Release. Uses compiler hints (__builtin_unreachable/__assume).
+ *    WARNING: Invokes Undefined Behavior if the condition is false. 
+ *    Use only if you are 100% sure about invariants.
+ * 
+ * 4. Default (None of the above):
+ *    No-op. Assertions are compiled out completely. Safe and fast.
+*/
+#ifndef EM_ASSERT
+#   if defined(DEBUG)
+#       include <assert.h>
+#       define EM_ASSERT(cond) assert(cond)
+#   elif defined(EM_ASSERT_PANIC)
+#       include <stdlib.h>
+#       define EM_ASSERT(cond) do { if (!(cond)) abort(); } while(0)
+#   elif defined(EM_ASSERT_OPTIMIZE)
+#       if defined(__GNUC__) || defined(__clang__)
+#           define EM_ASSERT(cond) do { if (!(cond)) __builtin_unreachable(); } while(0)
+#       elif defined(_MSC_VER)
+#           define EM_ASSERT(cond) __assume(cond)
+#       else
+#           define EM_ASSERT(cond) ((void)0)
+#       endif
+#   else
+        // Default Release: Safe No-op
+#       define EM_ASSERT(cond) ((void)0)
+#   endif
 #endif
 
+/*
+ * Configuration: EM_RESTRICT Macro
+ * Defines the restrict qualifier for pointer parameters to indicate non-aliasing.
+ * 
+ * Behavior depends on defined macros:
+ * 1. C99 or C++ (with compiler support):
+ *    Uses standard restrict or compiler-specific equivalents.
+ * 
+ * 2. Pre-C99/C++ (without compiler support):
+ *    Defined as empty, effectively disabling the restrict qualifier.
+*/
+#ifndef EM_RESTRICT
+#   if defined(__cplusplus)
+#       if defined(_MSC_VER)
+#           define EM_RESTRICT __restrict
+#       elif defined(__GNUC__) || defined(__clang__)
+#           define EM_RESTRICT __restrict__
+#       else
+#           define EM_RESTRICT
+#       endif
+#   elif defined(_MSC_VER)
+#       define EM_RESTRICT __restrict
+#   elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
+#       define EM_RESTRICT restrict
+#   else
+#       define EM_RESTRICT
+#   endif
+#endif
 
-#if defined(EM_NO_POISONING)
+/*
+ * Configuration: Safety Level
+ * Controls the balance between runtime safety checks and performance.
+ *
+ * Levels:
+ * 0 - UNCHECKED (Maximum Performance):
+ *     - Skips validation of magic numbers.
+ *     - Skips bounds checks where possible.
+ *     - Skips NULL pointer checks for 'em' instances (assumes valid inputs).
+ *     - WARNING: Passing invalid data leads to Undefined Behavior immediately.
+ *
+ * 1 - BASIC (Standard Safety):
+ *     - Checks for NULL pointers (like standard malloc/free).
+ *     - Checks for alignment validity.
+ *     - Checks size limits.
+ *     - Prevents obvious crashes but skips expensive validations.
+ *
+ * 2 - PARANOID (Maximum Safety) [DEFAULT]:
+ *     - Validates Magic Numbers (XOR protection) in em_free.
+ *     - Validates that blocks belong to the correct arena.
+ *     - double-free detection.
+ *     - Recommended for development and general usage.
+ */
+#ifndef EM_SAFETY_LEVEL
+#   define EM_SAFETY_LEVEL 2
+#endif
+
+/*
+ * Configuration: Compiler Attributes
+ * Adds compiler-specific attributes to functions for optimization and correctness hints.
+ * 
+ * Behavior depends on defined macros:
+ * 1. GCC or Clang:
+ *    Uses __attribute__ syntax for malloc, warn_unused_result, and alloc_size.
+ * 
+ * 2. MSVC:
+ *    Uses __declspec syntax where applicable.
+ * 
+ * 3. Other Compilers:
+ *    Attributes are defined as empty, effectively disabling them.
+ */
+#ifndef EM_ATTR_MALLOC
+#   if defined(__GNUC__) || defined(__clang__)
+        // GCC / Clang
+        // Tells optimizer that the function returns a pointer to a unique memory area (no alias).
+#       define EM_ATTR_MALLOC __attribute__((malloc))
+        // Warns if the caller ignores the return value (prevents memory leaks).
+#       define EM_ATTR_WARN_UNUSED __attribute__((warn_unused_result))
+        // Tells compiler which argument contains the size (for buffer overflow detection).
+#       define EM_ATTR_ALLOC_SIZE(x) __attribute__((alloc_size(x)))
+#       define EM_ATTR_ALLOC_SIZE2(x, y) __attribute__((alloc_size(x, y)))
+#   elif defined(_MSC_VER)
+        // MSVC (Windows)
+        // __declspec(restrict) is the equivalent of attribute((malloc)) for optimization.
+#       define EM_ATTR_MALLOC __declspec(restrict)
+        // MSVC requires SAL annotations for warn_unused/alloc_size, omitted here to stay header-only dependency-free.
+#       define EM_ATTR_WARN_UNUSED
+#       define EM_ATTR_ALLOC_SIZE(x)
+#       define EM_ATTR_ALLOC_SIZE2(x, y)
+#   else
+        // Unknown Compiler -> No-op
+#       define EM_ATTR_MALLOC
+#       define EM_ATTR_WARN_UNUSED
+#       define EM_ATTR_ALLOC_SIZE(x)
+#       define EM_ATTR_ALLOC_SIZE2(x, y)
+#   endif
+#endif
+
+/*
+ * Configuration: Memory Poisoning
+ * Helps detect use-after-free and memory corruption bugs by filling freed memory with a known pattern.
+ * 
+ * Behavior depends on defined macros:
+ * 1. EM_NO_POISONING:
+ *    Disables all poisoning features, regardless of build type.
+ * 
+ * 2. DEBUG (without EM_NO_POISONING):
+ *    Enables poisoning in debug builds for maximum safety.
+ * 
+ * 3. Default (Release without EM_NO_POISONING):
+ *    Disables poisoning to maximize performance.
+*/
+#ifdef EM_NO_POISONING
 #   if defined(EM_POISONING)
 #       undef EM_POISONING
 #   endif
@@ -53,63 +235,165 @@ extern "C" {
 #   define EM_POISONING
 #endif
 
+/*
+ * Configuration: Poison Byte
+ * Byte value used to fill freed memory when poisoning is enabled.
+ * Default is 0xDD, but can be customized by defining EM_POISON_BYTE before including this header.
+*/
+#ifndef EM_POISON_BYTE
+#   define EM_POISON_BYTE 0xDD
+#endif
+EM_STATIC_ASSERT((EM_POISON_BYTE >= 0x00) && (EM_POISON_BYTE <= 0xFF), "EM_POISON_BYTE must be a valid byte value (0x00 to 0xFF).");
 
+/*
+ * Configuration: Minimum Buffer Size
+ * Defines the minimum size of the usable memory buffer within a block.
+ * This prevents creation of useless zero-sized free blocks.
+ * Default is 16 bytes, but can be customized by defining EM_MIN_BUFFER_SIZE before including this header.
+*/
 #ifndef EM_MIN_BUFFER_SIZE
     // Default minimum buffer size for the single block.
 #   define EM_MIN_BUFFER_SIZE 16 
 #endif
 EM_STATIC_ASSERT(EM_MIN_BUFFER_SIZE > 0, "MIN_BUFFER_SIZE must be a positive value to prevent creation of useless zero-sized free blocks.");
 
-#define EM_DEFAULT_ALIGNMENT 16 // Default memory alignment
-
-
+/*
+ * Constant: Minimum Exponent
+ * Used to calculate minimum and maximum alignment limits based on pointer size.
+*/
 #if defined(__GNUC__) || defined(__clang__)
-    #define MIN_EXPONENT (__builtin_ctz(sizeof(uintptr_t)))
+#   define EMMIN_EXPONENT (__builtin_ctz(sizeof(uintptr_t)))
 #else
-    #define MIN_EXPONENT ( \
+#   define EMMIN_EXPONENT ( \
         (sizeof(uintptr_t) == 4) ? 2 : \
         (sizeof(uintptr_t) == 8) ? 3 : \
         4                              \
     )
 #endif
 
+/*
+ * Constant: Maximum Alignment Limit
+ * Maximum alignment is 512 on 32-bit systems and 1024 on 64-bit systems.
+*/
+#define EMMAX_ALIGNMENT ((size_t)(256 << EMMIN_EXPONENT))
 
-#define MAX_ALIGNMENT ((size_t)(256 << MIN_EXPONENT))
-#define MIN_ALIGNMENT ((size_t)sizeof(uintptr_t))
+/*
+ * Constant: Minimum Alignment Limit
+ * Minimum alignment is based on the size of uintptr_t.
+*/
+#define EMMIN_ALIGNMENT ((size_t)sizeof(uintptr_t))
 
-// size_and_alignment field masks
-#define ALIGNMENT_MASK     ((uintptr_t)7)
-#define SIZE_MASK         (~(uintptr_t)7)
-
-// prev field masks
-#define IS_FREE_FLAG       ((uintptr_t)1)
-#define COLOR_FLAG         ((uintptr_t)2) 
-#define PREV_MASK         (~(uintptr_t)3)
-
-// tail field masks
-#define IS_DYNAMIC_FLAG    ((uintptr_t)1)
-#define IS_NESTED_FLAG     ((uintptr_t)2)
-#define TAIL_MASK         (~(uintptr_t)3)
-
-// free_blocks field masks
-#define IS_PADDING         ((uintptr_t)1)
-#define HAS_SCRATCH_FLAG   ((uintptr_t)2)
-#define FREE_BLOCKS_MASK  (~(uintptr_t)3)
-
-
-#define RED false
-#define BLACK true
-
-#define BLOCK_MIN_SIZE (sizeof(Block) + EM_MIN_BUFFER_SIZE)
-#define EM_MIN_SIZE (sizeof(EM) + BLOCK_MIN_SIZE)
+/*
+ * Configuration: Default Alignment
+ * Defines the default memory alignment for the easy memory allocator.
+ * Default is 16 bytes, but can be customized by defining EM_DEFAULT_ALIGNMENT before including this header.
+*/
+#define EM_DEFAULT_ALIGNMENT 16 // Default memory alignment
+EM_STATIC_ASSERT((EM_DEFAULT_ALIGNMENT & (EM_DEFAULT_ALIGNMENT - 1)) == 0, "EM_DEFAULT_ALIGNMENT must be a power of two.");
+EM_STATIC_ASSERT(EM_DEFAULT_ALIGNMENT >= EMMIN_ALIGNMENT, "EM_DEFAULT_ALIGNMENT must be at least EMMIN_ALIGNMENT.");
+EM_STATIC_ASSERT(EM_DEFAULT_ALIGNMENT <= EMMAX_ALIGNMENT, "EM_DEFAULT_ALIGNMENT must be at most EMMAX_ALIGNMENT.");
 
 
+/*
+ * Constant: Alignment Mask
+ * Mask to extract alignment bits from size_and_alignment field.
+*/
+#define EMALIGNMENT_MASK     ((uintptr_t)7)
+
+/*
+ * Constant: Size Mask
+ * Mask to extract size bits from size_and_alignment field.
+*/
+#define EMSIZE_MASK         (~(uintptr_t)7)
+
+
+
+/*
+ * Constant: IS_FREE Mask
+ * Mask to check if a block is free.
+*/
+#define EMIS_FREE_FLAG       ((uintptr_t)1)
+
+/*
+ * Constant: COLOR Mask
+ * Mask to check the color of a block in the red-black tree.
+*/
+#define EMCOLOR_FLAG         ((uintptr_t)2)
+
+/*
+ * Constant: Previous Block Mask
+ * Mask to extract the previous block pointer from prev field.
+*/
+#define EMPREV_MASK         (~(uintptr_t)3)
+
+
+
+/*
+ * Constant: Is Dynamic Mask
+ * Mask to check if the EM is dynamically allocated.
+*/
+#define EMIS_DYNAMIC_FLAG    ((uintptr_t)1)
+
+/*
+ * Constant: Is Nested Mask
+ * Mask to check if the EM is a nested EM.
+*/
+#define EMIS_NESTED_FLAG     ((uintptr_t)2)
+
+/*
+ * Constant: Tail Block Mask
+ * Mask to extract the tail block pointer from tail field.
+*/
+#define EMTAIL_MASK         (~(uintptr_t)3)
+
+
+
+/*
+ * Constant: Padding Mask
+ * Mask used to ensure Zero in least significant bit of `free_blocks` pointer.
+ * Nedded for `Magic LSB Padding Detector` trick to work properly.
+ * For more info, see comment in `em_create_static_aligned` function.
+*/
+#define EMIS_PADDING         ((uintptr_t)1)
+
+/*
+ * Constant: Has Scratch Mask
+ * Mask to check if the EM scratchpad slot currently in use.
+*/
+#define EMHAS_SCRATCH_FLAG   ((uintptr_t)2)
+
+/*
+ * Constant: Free Blocks Mask
+ * Mask to extract the free blocks tree pointer from free_blocks field.
+*/
+#define EMFREE_BLOCKS_MASK  (~(uintptr_t)3)
+
+
+
+/*
+ * Constant: EM Color Definitions
+ * Defines the color values for blocks in the red-black tree.
+*/
+#define EMRED   false
+#define EMBLACK true
+
+/*
+ * Constant: Minimum Block Size
+ * The minimum size required to create a valid EM instance.
+*/
+#define EMBLOCK_MIN_SIZE (sizeof(Block) + EM_MIN_BUFFER_SIZE)
+
+/*
+ * Constant: Minimum EM Size
+ * The minimum size required to create a valid EM instance.
+*/
+#define EMMIN_SIZE       (sizeof(EM) + EMBLOCK_MIN_SIZE)
+
+/*
+ * Macro: Block Data Pointer
+ * Calculates the pointer to the usable data area of a block.
+*/
 #define block_data(block) ((void *)((char *)(block) + sizeof(Block)))
-
-// Structure type declarations for memory management
-typedef struct Block Block;
-typedef struct EM    EM;
-typedef struct Bump  Bump;
 
 /*
  * Memory block structure
@@ -147,6 +431,12 @@ struct Bump {
     } as;
 };
 
+EM_STATIC_ASSERT(offsetof(Bump, as.self.capacity) == offsetof(Block, size_and_alignment), 
+    Bump_capacity_offset_mismatch);
+EM_STATIC_ASSERT(offsetof(Bump, as.self.prev) == offsetof(Block, prev), 
+    Bump_prev_offset_mismatch);
+EM_STATIC_ASSERT(offsetof(Block, as.occupied.em) == offsetof(Bump, as.self.em), 
+    Bump_em_offset_mismatch);
 EM_STATIC_ASSERT((sizeof(Bump) == sizeof(Block)), Size_mismatch_between_Bump_and_Block);
 
 /*
@@ -160,69 +450,109 @@ struct EM {
             size_t capacity_and_alignment;  // Total capacity of the easy memory
             Block *prev;                    // Pointer to the previous block in the global list, need for compatibility with block struct layout
             Block *tail;                    // Pointer to the last block in the global list, also stores is_dynamic flag via pointer tagging
-            Block *free_blocks;             // Pointer to the tree of free blocks
+            Block *free_blocks;             // Pointer to the tree of free blocks and scratchpad usage flag via pointer tagging
         } self;
     } as;
 };
 
+EM_STATIC_ASSERT(offsetof(EM, as.self.capacity_and_alignment) == offsetof(Block, size_and_alignment), 
+    EM_capacity_offset_mismatch);
+EM_STATIC_ASSERT(offsetof(EM, as.self.prev) == offsetof(Block, prev), 
+    EM_prev_offset_mismatch);
+EM_STATIC_ASSERT(offsetof(EM, as.self.tail) == offsetof(Block, as.occupied.em), 
+    EM_tail_offset_mismatch);
 EM_STATIC_ASSERT((sizeof(Bump) == sizeof(Block)), Size_mismatch_between_Bump_and_Block);
 
+
+
+/* 
+ * ======================================================================================
+ * Public API Declarations
+ * ======================================================================================
+*/
 
 #ifdef DEBUG
 #include <stdio.h>
 #include <math.h>
-void print_em(EM *em);
-void print_fancy(EM *em, size_t bar_size);
-void print_llrb_tree(Block *node, int depth);
+EMDEF void print_em(EM *em);
+EMDEF void print_fancy(EM *em, size_t bar_size);
+EMDEF void print_llrb_tree(Block *node, int depth);
 #endif // DEBUG
 
 
-// EM specific functions
-// EM creation functions
+// --- EM Creation (Dynamic) ---
 #ifndef EM_NO_MALLOC
+EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED
 EM *em_create(size_t size);
+
+EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED 
 EM *em_create_aligned(size_t size, size_t alignment);
 #endif // EM_NO_MALLOC
 
-EM *em_create_static(void *memory, size_t size);
-EM *em_create_static_aligned(void *memory, size_t size, size_t alignment);
+// --- EM Creation (Static) ---
+EMDEF EM_ATTR_WARN_UNUSED 
+EM *em_create_static(void *EM_RESTRICT memory, size_t size);
 
-EM *em_create_nested(EM *parent_em, size_t size);
-EM *em_create_nested_aligned(EM *parent_em, size_t size, size_t alignment);
+EMDEF EM_ATTR_WARN_UNUSED 
+EM *em_create_static_aligned(void *EM_RESTRICT memory, size_t size, size_t alignment);
 
-EM *em_create_scratch(EM *parent_em, size_t size);
-EM *em_create_scratch_aligned(EM *parent_em, size_t size, size_t alignment);
+// --- EM Creation (Nested & Scratch) ---
+EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED 
+EM *em_create_nested(EM *EM_RESTRICT parent_em, size_t size);
 
-// EM reset and destroy functions
-void em_reset(EM *em);
-void em_reset_zero(EM *em);
-void em_destroy(EM *em);
-void em_free_scratch(EM *em); // Optional free scratch memory function. Try not to use it. 
-//                               Recommended to call em_free or dedicated em_destroy_* for specific objects. 
-//                               Yes, EM know what blocks\sub-allocators are scratch and can free\destroy them properly. 
+EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED 
+EM *em_create_nested_aligned(EM *EM_RESTRICT parent_em, size_t size, size_t alignment);
+ 
+EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED
+EM *em_create_scratch(EM *EM_RESTRICT parent_em, size_t size);
 
-// Allocation functions
-void *em_alloc(EM *em, size_t size);
-void *em_alloc_aligned(EM *em, size_t size, size_t alignment);
+EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED 
+EM *em_create_scratch_aligned(EM *EM_RESTRICT parent_em, size_t size, size_t alignment);
 
-void *em_alloc_scratch(EM *em, size_t size);
-void *em_alloc_scratch_aligned(EM *em, size_t size, size_t alignment);
-
-// Calloc function
-void *em_calloc(EM *em, size_t nmemb, size_t size);
-void em_free(void *data);
-
-
-
-// Bump allocator specific functions
-Bump *em_create_bump(EM *em, size_t size);
-void *em_bump_alloc(Bump *bump, size_t size);
-void *em_bump_alloc_aligned(Bump *bump, size_t size, size_t alignment);
-void em_bump_trim(Bump *bump);
-void em_bump_reset(Bump *bump);
-void em_bump_destroy(Bump *bump);
+// --- Lifecycle & Reset ---
+EMDEF void em_reset(EM *EM_RESTRICT em);
+EMDEF void em_reset_zero(EM *EM_RESTRICT em);
+EMDEF void em_destroy(EM *em);
+EMDEF void em_free_scratch(EM *em); // Optional free scratch memory function. Try not to use it. 
+//                                   Recommended to call em_free or dedicated em_destroy_* for specific objects. 
+//                                   Yes, EM know what blocks\sub-allocators are scratch and can free\destroy them properly. 
 
 
+// --- Allocation Core ---
+EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED EM_ATTR_ALLOC_SIZE(2) 
+void *em_alloc(EM *EM_RESTRICT em, size_t size);
+
+EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED EM_ATTR_ALLOC_SIZE(2) 
+void *em_alloc_aligned(EM *EM_RESTRICT em, size_t size, size_t alignment);
+
+EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED EM_ATTR_ALLOC_SIZE(2) 
+void *em_alloc_scratch(EM *EM_RESTRICT em, size_t size);
+
+EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED EM_ATTR_ALLOC_SIZE(2) 
+void *em_alloc_scratch_aligned(EM *EM_RESTRICT em, size_t size, size_t alignment);
+
+// --- Calloc ---
+EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED EM_ATTR_ALLOC_SIZE2(2, 3) 
+void *em_calloc(EM *EM_RESTRICT em, size_t nmemb, size_t size);
+
+// --- Free ---
+EMDEF void em_free(void *data);
+
+
+
+// --- Bump Allocator ---
+EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED
+Bump *em_create_bump(EM *EM_RESTRICT em, size_t size);
+
+EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED EM_ATTR_ALLOC_SIZE(2)
+void *em_bump_alloc(Bump *EM_RESTRICT bump, size_t size);
+
+EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED EM_ATTR_ALLOC_SIZE(2) 
+void *em_bump_alloc_aligned(Bump *EM_RESTRICT bump, size_t size, size_t alignment);
+
+EMDEF void em_bump_trim(Bump *EM_RESTRICT bump);
+EMDEF void em_bump_reset(Bump *EM_RESTRICT bump);
+EMDEF void em_bump_destroy(Bump *bump);
 
 #ifdef EASY_MEMORY_IMPLEMENTATION
 
@@ -276,7 +606,7 @@ static inline size_t min_exponent_of(size_t num) {
 static inline size_t get_alignment(const Block *block) {
     EM_ASSERT((block != NULL) && "Internal Error: 'get_alignment' called on NULL block");
 
-    size_t exponent = (block->size_and_alignment & ALIGNMENT_MASK) + MIN_EXPONENT; // Extract exponent and adjust by MIN_EXPONENT
+    size_t exponent = (block->size_and_alignment & EMALIGNMENT_MASK) + EMMIN_EXPONENT; // Extract exponent and adjust by EMMIN_EXPONENT
     size_t alignment = (size_t)1 << (exponent); // Calculate alignment as power of two
 
     return alignment;
@@ -292,22 +622,22 @@ static inline size_t get_alignment(const Block *block) {
 static inline void set_alignment(Block *block, size_t alignment) {
     EM_ASSERT((block != NULL)                      && "Internal Error: 'set_alignment' called on NULL block");
     EM_ASSERT(((alignment & (alignment - 1)) == 0) && "Internal Error: 'set_alignment' called on invalid alignment");
-    EM_ASSERT((alignment >= MIN_ALIGNMENT)         && "Internal Error: 'set_alignment' called on too small alignment");
-    EM_ASSERT((alignment <= MAX_ALIGNMENT)         && "Internal Error: 'set_alignment' called on too big alignment");
+    EM_ASSERT((alignment >= EMMIN_ALIGNMENT)         && "Internal Error: 'set_alignment' called on too small alignment");
+    EM_ASSERT((alignment <= EMMAX_ALIGNMENT)         && "Internal Error: 'set_alignment' called on too big alignment");
 
     /*
      * How does that work?
      * Alignment is always a power of two, so instead of storing the alignment directly and wasting full 4-8 bytes, we can represent it as 2^n.
-     * Since minimum alignment is 2^MIN_EXPONENT, we can store only the exponent minus MIN_EXPONENT in 3 bits(value 0-7).
+     * Since minimum alignment is 2^EMMIN_EXPONENT, we can store only the exponent minus EMMIN_EXPONENT in 3 bits(value 0-7).
      * For example:
-     *  - On 32-bit system (MIN_EXPONENT = 2):
+     *  - On 32-bit system (EMMIN_EXPONENT = 2):
      *       Alignment 4     ->  2^2  ->  2-2  ->  stored as 0
      *       Alignment 8     ->  2^3  ->  3-2  ->  stored as 1
      *       Alignment 16    ->  2^4  ->  4-2  ->  stored as 2
      *       ... and so on up to
      *       Alignment 512   ->  2^9  ->  9-2  ->  stored as 7
      * 
-     *  - On 64-bit system (MIN_EXPONENT = 3):
+     *  - On 64-bit system (EMMIN_EXPONENT = 3):
      *       Alignment 8     ->  2^3  ->  3-3  ->  stored as 0
      *       Alignment 16    ->  2^4  ->  4-3  ->  stored as 1
      *       Alignment 32    ->  2^5  ->  5-3  ->  stored as 2
@@ -316,9 +646,9 @@ static inline void set_alignment(Block *block, size_t alignment) {
      * This way, we efficiently use only 3 bits to cover the full range alignments that could be potentially used within the size_and_alignment field.
     */ 
     
-    size_t exponent = min_exponent_of(alignment >> MIN_EXPONENT); // Calculate exponent from alignment
+    size_t exponent = min_exponent_of(alignment >> EMMIN_EXPONENT); // Calculate exponent from alignment
 
-    size_t spot = block->size_and_alignment & ALIGNMENT_MASK; // Preserve current alignment bits
+    size_t spot = block->size_and_alignment & EMALIGNMENT_MASK; // Preserve current alignment bits
     block->size_and_alignment = block->size_and_alignment ^ spot; // Clear current alignment bits
 
     block->size_and_alignment = block->size_and_alignment | exponent;  // Set new alignment bits
@@ -345,7 +675,7 @@ static inline size_t get_size(const Block *block) {
  */
 static inline void set_size(Block *block, size_t size) {
     EM_ASSERT((block != NULL)      && "Internal Error: 'set_size' called on NULL block");
-    EM_ASSERT((size <= SIZE_MASK)  && "Internal Error: 'set_size' called on too big size");
+    EM_ASSERT((size <= EMSIZE_MASK)  && "Internal Error: 'set_size' called on too big size");
 
     /*
      * Why size limit?
@@ -368,7 +698,7 @@ static inline void set_size(Block *block, size_t size) {
      * Conclusion: This limitation is a deliberate trade-off that avoids any *real* constraints on both 32-bit and 64-bit systems while optimizing memory usage.
     */
 
-    size_t alignment_piece = block->size_and_alignment & ALIGNMENT_MASK; // Preserve current alignment bits
+    size_t alignment_piece = block->size_and_alignment & EMALIGNMENT_MASK; // Preserve current alignment bits
     block->size_and_alignment = (size << 3) | alignment_piece; // Set new size while preserving alignment bits
 }
 
@@ -381,7 +711,7 @@ static inline void set_size(Block *block, size_t size) {
 static inline Block *get_prev(const Block *block) {
     EM_ASSERT((block != NULL) && "Internal Error: 'get_prev' called on NULL block");
 
-    return (Block *)((uintptr_t)block->prev & PREV_MASK); // Clear flag bits to get actual pointer
+    return (Block *)((uintptr_t)block->prev & EMPREV_MASK); // Clear flag bits to get actual pointer
 }
 
 /*
@@ -406,7 +736,7 @@ static inline void set_prev(Block *block, void *ptr) {
      * This way, we can store our flags without increasing the size of the Block struct at all.
     */
     
-    uintptr_t flags_tips = (uintptr_t)block->prev & ~PREV_MASK; // Preserve flag bits
+    uintptr_t flags_tips = (uintptr_t)block->prev & ~EMPREV_MASK; // Preserve flag bits
     block->prev = (Block *)((uintptr_t)ptr | flags_tips); // Set new pointer while preserving flag bits
 }
 
@@ -419,7 +749,7 @@ static inline void set_prev(Block *block, void *ptr) {
 static inline bool get_is_free(const Block *block) {
     EM_ASSERT((block != NULL) && "Internal Error: 'get_is_free' called on NULL block");
 
-    return (uintptr_t)block->prev & IS_FREE_FLAG; // Check the is_free flag bit
+    return (uintptr_t)block->prev & EMIS_FREE_FLAG; // Check the is_free flag bit
 }
 
 /*
@@ -436,10 +766,10 @@ static inline void set_is_free(Block *block, bool is_free) {
 
     uintptr_t int_ptr = (uintptr_t)(block->prev); // Get current pointer with flags
     if (is_free) {
-        int_ptr |= IS_FREE_FLAG;  // Set the is_free flag bit
+        int_ptr |= EMIS_FREE_FLAG;  // Set the is_free flag bit
     }
     else {
-        int_ptr &= ~IS_FREE_FLAG; // Clear the is_free flag bit
+        int_ptr &= ~EMIS_FREE_FLAG; // Clear the is_free flag bit
     }
     block->prev = (Block *)int_ptr; // Update the prev field with new flags
 }
@@ -453,7 +783,7 @@ static inline void set_is_free(Block *block, bool is_free) {
 static inline bool get_color(const Block *block) {
     EM_ASSERT((block != NULL) && "Internal Error: 'get_color' called on NULL block");
 
-    return ((uintptr_t)block->prev & COLOR_FLAG); // Check the color flag bit
+    return ((uintptr_t)block->prev & EMCOLOR_FLAG); // Check the color flag bit
 }
 
 /*
@@ -470,10 +800,10 @@ static inline void set_color(Block *block, bool color) {
 
     uintptr_t int_ptr = (uintptr_t)(block->prev); // Get current pointer with flags
     if (color) {
-        int_ptr |= COLOR_FLAG; // Set the color flag bit
+        int_ptr |= EMCOLOR_FLAG; // Set the color flag bit
     }
     else {
-        int_ptr &= ~COLOR_FLAG; // Clear the color flag bit
+        int_ptr &= ~EMCOLOR_FLAG; // Clear the color flag bit
     }
     block->prev = (Block *)int_ptr; // Update the prev field with new flags
 }
@@ -605,7 +935,7 @@ static inline bool get_is_in_scratch(const Block *block) {
      * So combination of occupied + black gives us unique state that we use to identify scratch block.
     */
 
-    return (!get_is_free(block) && get_color(block) == BLACK);
+    return (!get_is_free(block) && get_color(block) == EMBLACK);
 }
 
 /*
@@ -623,11 +953,11 @@ static inline void set_is_in_scratch(Block *block, bool is_scratch) {
 
     set_is_free(block, !is_scratch); // Set free status based on scratch status
     if (is_scratch) {
-        set_color(block, BLACK); // Set color to BLACK for scratch blocks
+        set_color(block, EMBLACK); // Set color to BLACK for scratch blocks
     }
     // LCOV_EXCL_START
     else {
-        set_color(block, RED);   // Set color to RED for non-scratch blocks
+        set_color(block, EMRED);   // Set color to RED for non-scratch blocks
     }
     // LCOV_EXCL_STOP
 }
@@ -643,7 +973,7 @@ static inline void set_is_in_scratch(Block *block, bool is_scratch) {
 static inline Block *em_get_tail(const EM *em) {
     EM_ASSERT((em != NULL) && "Internal Error: 'em_get_tail' called on NULL easy memory");
 
-    return (Block *)((uintptr_t)em->as.self.tail & TAIL_MASK);
+    return (Block *)((uintptr_t)em->as.self.tail & EMTAIL_MASK);
 }
 
 /*
@@ -659,7 +989,7 @@ static inline void em_set_tail(EM *em, Block *block) {
      * In this case we store is_dynamic and is_nested flags in the tail pointer.
     */
 
-    uintptr_t flags_tips = (uintptr_t)em->as.self.tail & ~TAIL_MASK; // Preserve flag bits
+    uintptr_t flags_tips = (uintptr_t)em->as.self.tail & ~EMTAIL_MASK; // Preserve flag bits
     em->as.self.tail = (Block *)((uintptr_t)block | flags_tips); // set new pointer while preserving flag bits
 }
 
@@ -672,7 +1002,7 @@ static inline void em_set_tail(EM *em, Block *block) {
 static inline bool em_get_is_dynamic(const EM *em) {
     EM_ASSERT((em != NULL) && "Internal Error: 'em_get_is_dynamic' called on NULL easy memory");
 
-    return ((uintptr_t)em->as.self.tail & IS_DYNAMIC_FLAG); // Check the is_dynamic flag bit
+    return ((uintptr_t)em->as.self.tail & EMIS_DYNAMIC_FLAG); // Check the is_dynamic flag bit
 }
 
 /*
@@ -689,10 +1019,10 @@ static inline void em_set_is_dynamic(EM *em, bool is_dynamic) {
 
     uintptr_t int_ptr = (uintptr_t)(em->as.self.tail); // Get current pointer with flags
     if (is_dynamic) {
-        int_ptr |= IS_DYNAMIC_FLAG; // Set the is_dynamic flag bit
+        int_ptr |= EMIS_DYNAMIC_FLAG; // Set the is_dynamic flag bit
     }
     else {
-        int_ptr &= ~IS_DYNAMIC_FLAG; // Clear the is_dynamic flag bit
+        int_ptr &= ~EMIS_DYNAMIC_FLAG; // Clear the is_dynamic flag bit
     }
     em->as.self.tail = (Block *)int_ptr; // Update the tail field with new flags
 }
@@ -706,7 +1036,7 @@ static inline void em_set_is_dynamic(EM *em, bool is_dynamic) {
 static inline bool em_get_is_nested(const EM *em) {
     EM_ASSERT((em != NULL) && "Internal Error: 'em_get_is_nested' called on NULL easy memory");
     
-    return ((uintptr_t)em->as.self.tail & IS_NESTED_FLAG);
+    return ((uintptr_t)em->as.self.tail & EMIS_NESTED_FLAG);
 }
 
 /*
@@ -723,10 +1053,10 @@ static inline void em_set_is_nested(EM *em, bool is_nested) {
 
     uintptr_t int_ptr = (uintptr_t)(em->as.self.tail);  // Get current pointer with flags
     if (is_nested) {
-        int_ptr |= IS_NESTED_FLAG; // Set the is_nested flag bit
+        int_ptr |= EMIS_NESTED_FLAG; // Set the is_nested flag bit
     }
     else {
-        int_ptr &= ~IS_NESTED_FLAG; // Clear the is_nested flag bit
+        int_ptr &= ~EMIS_NESTED_FLAG; // Clear the is_nested flag bit
     }
     em->as.self.tail = (Block *)int_ptr; // Update the tail field with new flags
 }
@@ -740,7 +1070,7 @@ static inline void em_set_is_nested(EM *em, bool is_nested) {
 static inline bool em_get_padding_bit(const EM *em) {
     EM_ASSERT((em != NULL) && "Internal Error: 'em_get_padding_bit' called on NULL easy memory");
 
-    return ((uintptr_t)em->as.self.free_blocks & IS_PADDING); // Check the is_padding flag bit
+    return ((uintptr_t)em->as.self.free_blocks & EMIS_PADDING); // Check the is_padding flag bit
 }
 
 /*
@@ -758,11 +1088,11 @@ static inline void em_set_padding_bit(EM *em, bool has_padding) {
     uintptr_t int_ptr = (uintptr_t)(em->as.self.free_blocks); // Get current pointer with flags
     if (has_padding) {
     // LCOV_EXCL_START
-        int_ptr |= IS_PADDING; // Set the is_padding flag bit
+        int_ptr |= EMIS_PADDING; // Set the is_padding flag bit
     // LCOV_EXCL_STOP
     }
     else {
-        int_ptr &= ~IS_PADDING; // Clear the is_padding flag bit
+        int_ptr &= ~EMIS_PADDING; // Clear the is_padding flag bit
     }
     em->as.self.free_blocks = (Block *)int_ptr; // Update the free_blocks field with new flags
 }
@@ -776,7 +1106,7 @@ static inline void em_set_padding_bit(EM *em, bool has_padding) {
 static inline bool em_get_has_scratch(const EM *em) {
     EM_ASSERT((em != NULL) && "Internal Error: 'em_get_has_scratch' called on NULL easy memory");
 
-    return ((uintptr_t)em->as.self.free_blocks & HAS_SCRATCH_FLAG); // Check the is_scratch flag bit
+    return ((uintptr_t)em->as.self.free_blocks & EMHAS_SCRATCH_FLAG); // Check the is_scratch flag bit
 }
 
 /*
@@ -793,10 +1123,10 @@ static inline void em_set_has_scratch(EM *em, bool has_scratch) {
 
     uintptr_t int_ptr = (uintptr_t)(em->as.self.free_blocks); // Get current pointer with flags
     if (has_scratch) {
-        int_ptr |= HAS_SCRATCH_FLAG; // Set the has_scratch flag bit
+        int_ptr |= EMHAS_SCRATCH_FLAG; // Set the has_scratch flag bit
     }
     else {
-        int_ptr &= ~HAS_SCRATCH_FLAG; // Clear the has_scratch flag bit
+        int_ptr &= ~EMHAS_SCRATCH_FLAG; // Clear the has_scratch flag bit
     }
     em->as.self.free_blocks = (Block *)int_ptr; // Update the free_blocks field with new flags
 }
@@ -810,7 +1140,7 @@ static inline void em_set_has_scratch(EM *em, bool has_scratch) {
 static inline Block *em_get_free_blocks(const EM *em) {
     EM_ASSERT((em != NULL) && "Internal Error: 'em_get_free_blocks' called on NULL easy memory");
 
-    return (Block *)((uintptr_t)em->as.self.free_blocks & FREE_BLOCKS_MASK); // select only pointer bits
+    return (Block *)((uintptr_t)em->as.self.free_blocks & EMFREE_BLOCKS_MASK); // select only pointer bits
 }
 
 /*
@@ -825,7 +1155,7 @@ static inline void em_set_free_blocks(EM *em, Block *block) {
      * In this case we store padding_bit and has_scratch flags in the free_blocks pointer.
     */
 
-    uintptr_t flags_tips = (uintptr_t)em->as.self.free_blocks & ~FREE_BLOCKS_MASK; // Preserve flag bits
+    uintptr_t flags_tips = (uintptr_t)em->as.self.free_blocks & ~EMFREE_BLOCKS_MASK; // Preserve flag bits
     em->as.self.free_blocks = (Block *)((uintptr_t)block | flags_tips); // set new pointer while preserving flag bits
 }
 
@@ -853,8 +1183,8 @@ static inline size_t em_get_capacity(const EM *em) {
  */
 static inline void em_set_capacity(EM *em, size_t size) {
     EM_ASSERT((em != NULL)                            && "Internal Error: 'em_set_capacity' called on NULL easy memory");
-    EM_ASSERT(((size == 0 || size >= BLOCK_MIN_SIZE)) && "Internal Error: 'em_set_capacity' called on too small size");
-    EM_ASSERT((size <= SIZE_MASK)                     && "Internal Error: 'em_set_capacity' called on too big size");
+    EM_ASSERT(((size == 0 || size >= EMBLOCK_MIN_SIZE)) && "Internal Error: 'em_set_capacity' called on too small size");
+    EM_ASSERT((size <= EMSIZE_MASK)                     && "Internal Error: 'em_set_capacity' called on too big size");
 
     /*
      * What is happening here?
@@ -889,8 +1219,8 @@ static inline size_t em_get_alignment(const EM *em) {
 static inline void em_set_alignment(EM *em, size_t alignment) {
     EM_ASSERT((em != NULL)                         && "Internal Error: 'em_set_alignment' called on NULL easy memory");
     EM_ASSERT(((alignment & (alignment - 1)) == 0) && "Internal Error: 'em_set_alignment' called on invalid alignment");
-    EM_ASSERT((alignment >= MIN_ALIGNMENT)         && "Internal Error: 'em_set_alignment' called on too small alignment");
-    EM_ASSERT((alignment <= MAX_ALIGNMENT)         && "Internal Error: 'em_set_alignment' called on too big alignment");
+    EM_ASSERT((alignment >= EMMIN_ALIGNMENT)         && "Internal Error: 'em_set_alignment' called on too small alignment");
+    EM_ASSERT((alignment <= EMMAX_ALIGNMENT)         && "Internal Error: 'em_set_alignment' called on too big alignment");
     
     /*
      * What is happening here?
@@ -1018,7 +1348,7 @@ static inline size_t free_size_in_tail(const EM *em) {
 
     if (em_get_has_scratch(em)) {
         uintptr_t raw_end = (uintptr_t)em + em_capacity;
-        uintptr_t aligned_end = align_down(raw_end, MIN_ALIGNMENT);
+        uintptr_t aligned_end = align_down(raw_end, EMMIN_ALIGNMENT);
 
         size_t *stored_size_ptr = (size_t*)(aligned_end - sizeof(uintptr_t));
 
@@ -1090,7 +1420,7 @@ static inline Block *create_block(void *point) {
     set_size(block, 0);
     set_prev(block, NULL);
     set_is_free(block, true);
-    set_color(block, RED);
+    set_color(block, EMRED);
     set_left_tree(block, NULL);
     set_right_tree(block, NULL);
 
@@ -1129,7 +1459,7 @@ static inline Block *create_next_block(EM *em, Block *prev_block) {
  * Merge source into target
  * Source must be physically immediately after target.
  */
-static inline inline void merge_blocks_logic(EM *em, Block *target, Block *source) {
+static inline void merge_blocks_logic(EM *em, Block *target, Block *source) {
     EM_ASSERT((em != NULL)      && "Internal Error: 'merge_blocks_logic' called on NULL easy memory");
     EM_ASSERT((target != NULL)  && "Internal Error: 'merge_blocks_logic' called on NULL target");
     EM_ASSERT((source != NULL)  && "Internal Error: 'merge_blocks_logic' called on NULL source");
@@ -1160,7 +1490,7 @@ static inline Block *rotateLeft(Block *current_block) {
     set_left_tree(x, current_block);
 
     set_color(x, get_color(current_block));
-    set_color(current_block, RED);
+    set_color(current_block, EMRED);
 
     return x;
 }
@@ -1177,7 +1507,7 @@ static inline Block *rotateRight(Block *current_block) {
     set_right_tree(x, current_block);
 
     set_color(x, get_color(current_block));
-    set_color(current_block, RED);
+    set_color(current_block, EMRED);
 
     return x;
 }
@@ -1186,12 +1516,12 @@ static inline Block *rotateRight(Block *current_block) {
  * Flip colors
  * Used to balance the LLRB tree
  */
-static void flipColors(Block *current_block) {
+static inline void flipColors(Block *current_block) {
     EM_ASSERT((current_block != NULL) && "Internal Error: 'flipColors' called on NULL current_block");
     
-    set_color(current_block, RED);
-    set_color(get_left_tree(current_block), BLACK);
-    set_color(get_right_tree(current_block), BLACK);
+    set_color(current_block, EMRED);
+    set_color(get_left_tree(current_block), EMBLACK);
+    set_color(get_right_tree(current_block), EMBLACK);
 }
 
 /*
@@ -1200,7 +1530,7 @@ static void flipColors(Block *current_block) {
  */
 static inline bool is_red(Block *block) {
     if (block == NULL) return false;
-    return get_color(block) == RED;
+    return get_color(block) == EMRED;
 }
 
 /*
@@ -1293,10 +1623,10 @@ static Block *insert_block(Block *h, Block *new_block) {
  */
 static Block *find_best_fit(Block *root, size_t size, size_t alignment, Block **out_parent) {
     EM_ASSERT((size > 0)          && "Internal Error: 'find_best_fit' called on too small size");
-    EM_ASSERT((size <= SIZE_MASK) && "Internal Error: 'find_best_fit' called on too big size");
+    EM_ASSERT((size <= EMSIZE_MASK) && "Internal Error: 'find_best_fit' called on too big size");
     EM_ASSERT(((alignment & (alignment - 1)) == 0) && "Internal Error: 'find_best_fit' called on invalid alignment");
-    EM_ASSERT((alignment >= MIN_ALIGNMENT)         && "Internal Error: 'find_best_fit' called on too small alignment");
-    EM_ASSERT((alignment <= MAX_ALIGNMENT)         && "Internal Error: 'find_best_fit' called on too big alignment");
+    EM_ASSERT((alignment >= EMMIN_ALIGNMENT)         && "Internal Error: 'find_best_fit' called on too small alignment");
+    EM_ASSERT((alignment <= EMMAX_ALIGNMENT)         && "Internal Error: 'find_best_fit' called on too big alignment");
     
     if (root == NULL) return NULL;
 
@@ -1401,7 +1731,7 @@ static void detach_block_fast(Block **tree_root, Block *target, Block *parent) {
 
     set_left_tree(target, NULL);
     set_right_tree(target, NULL);
-    set_color(target, RED);
+    set_color(target, EMRED);
     
     if (*tree_root) *tree_root = balance(*tree_root);
 }
@@ -1413,10 +1743,10 @@ static void detach_block_fast(Block **tree_root, Block *target, Block *parent) {
  */
 static Block *find_and_detach_block(Block **tree_root, size_t size, size_t alignment) {
     EM_ASSERT((size > 0)          && "Internal Error: 'find_and_detach_block' called on too small size");
-    EM_ASSERT((size <= SIZE_MASK) && "Internal Error: 'find_and_detach_block' called on too big size");
+    EM_ASSERT((size <= EMSIZE_MASK) && "Internal Error: 'find_and_detach_block' called on too big size");
     EM_ASSERT(((alignment & (alignment - 1)) == 0) && "Internal Error: 'find_and_detach_block' called on invalid alignment");
-    EM_ASSERT((alignment >= MIN_ALIGNMENT)         && "Internal Error: 'find_and_detach_block' called on too small alignment");
-    EM_ASSERT((alignment <= MAX_ALIGNMENT)         && "Internal Error: 'find_and_detach_block' called on too big alignment");
+    EM_ASSERT((alignment >= EMMIN_ALIGNMENT)         && "Internal Error: 'find_and_detach_block' called on too small alignment");
+    EM_ASSERT((alignment <= EMMAX_ALIGNMENT)         && "Internal Error: 'find_and_detach_block' called on too big alignment");
     
     if (*tree_root == NULL) return NULL;
 
@@ -1481,7 +1811,7 @@ static void em_free_block_full(EM *em, Block *block);
 static inline void split_block(EM *em, Block *block, size_t needed_size) {
     size_t full_size = get_size(block);
     
-    if (full_size > needed_size && full_size - needed_size >= BLOCK_MIN_SIZE) {
+    if (full_size > needed_size && full_size - needed_size >= EMBLOCK_MIN_SIZE) {
         set_size(block, needed_size);
 
         Block *remainder = create_block(next_block_unsafe(block)); 
@@ -1571,7 +1901,7 @@ static void em_free_block_full(EM *em, Block *block) {
     set_is_free(block, true);
     set_left_tree(block, NULL);
     set_right_tree(block, NULL);
-    set_color(block, RED);
+    set_color(block, EMRED);
 
     Block *tail = em_get_tail(em);
     Block *prev = get_prev(block);
@@ -1636,10 +1966,10 @@ static void em_free_block_full(EM *em, Block *block) {
 static void *alloc_in_free_blocks(EM *em, size_t size, size_t alignment) {
     EM_ASSERT((em != NULL)                         && "Internal Error: 'alloc_in_free_blocks' called on NULL easy memory");
     EM_ASSERT((size > 0)                           && "Internal Error: 'alloc_in_free_blocks' called on too small size");
-    EM_ASSERT((size <= SIZE_MASK)                  && "Internal Error: 'alloc_in_free_blocks' called on too big size");
+    EM_ASSERT((size <= EMSIZE_MASK)                  && "Internal Error: 'alloc_in_free_blocks' called on too big size");
     EM_ASSERT(((alignment & (alignment - 1)) == 0) && "Internal Error: 'alloc_in_free_blocks' called on invalid alignment");
-    EM_ASSERT((alignment >= MIN_ALIGNMENT)         && "Internal Error: 'alloc_in_free_blocks' called on too small alignment");
-    EM_ASSERT((alignment <= MAX_ALIGNMENT)         && "Internal Error: 'alloc_in_free_blocks' called on too big alignment");
+    EM_ASSERT((alignment >= EMMIN_ALIGNMENT)         && "Internal Error: 'alloc_in_free_blocks' called on too small alignment");
+    EM_ASSERT((alignment <= EMMAX_ALIGNMENT)         && "Internal Error: 'alloc_in_free_blocks' called on too big alignment");
 
     Block *root = em_get_free_blocks(em);
     Block *block = find_and_detach_block(&root, size, alignment);
@@ -1648,7 +1978,7 @@ static void *alloc_in_free_blocks(EM *em, size_t size, size_t alignment) {
     if (!block) return NULL;
     
     set_is_free(block, false);
-    
+
     uintptr_t data_ptr = (uintptr_t)block_data(block);
     uintptr_t aligned_ptr = align_up(data_ptr, alignment);
     size_t padding = aligned_ptr - data_ptr;
@@ -1665,7 +1995,7 @@ static void *alloc_in_free_blocks(EM *em, size_t size, size_t alignment) {
 
     set_em(block, em);
     set_magic(block, (void *)aligned_ptr);
-    set_color(block, RED);
+    set_color(block, EMRED);
 
     return (void *)aligned_ptr;
 }
@@ -1678,10 +2008,10 @@ static void *alloc_in_free_blocks(EM *em, size_t size, size_t alignment) {
 static void *alloc_in_tail_full(EM *em, size_t size, size_t alignment) {
     EM_ASSERT((em != NULL)                         && "Internal Error: 'alloc_in_tail_full' called on NULL easy memory");
     EM_ASSERT((size > 0)                           && "Internal Error: 'alloc_in_tail_full' called on too small size");
-    EM_ASSERT((size <= SIZE_MASK)                  && "Internal Error: 'alloc_in_tail_full' called on too big size");
+    EM_ASSERT((size <= EMSIZE_MASK)                  && "Internal Error: 'alloc_in_tail_full' called on too big size");
     EM_ASSERT(((alignment & (alignment - 1)) == 0) && "Internal Error: 'alloc_in_tail_full' called on invalid alignment");
-    EM_ASSERT((alignment >= MIN_ALIGNMENT)         && "Internal Error: 'alloc_in_tail_full' called on too small alignment");
-    EM_ASSERT((alignment <= MAX_ALIGNMENT)         && "Internal Error: 'alloc_in_tail_full' called on too big alignment");
+    EM_ASSERT((alignment >= EMMIN_ALIGNMENT)         && "Internal Error: 'alloc_in_tail_full' called on too small alignment");
+    EM_ASSERT((alignment <= EMMAX_ALIGNMENT)         && "Internal Error: 'alloc_in_tail_full' called on too big alignment");
     if (free_size_in_tail(em) < size) return NULL;  // Quick check to avoid unnecessary calculations
     
     /*
@@ -1689,7 +2019,7 @@ static void *alloc_in_tail_full(EM *em, size_t size, size_t alignment) {
      * 1. Alignment padding before user data:
      *      If the required alignment is greater than the easy memory's alignment, 
      *       we need to calculate the padding needed before the user data to satisfy the alignment requirement.
-     *      If calculated padding is so big that it by itself can contain a whole minimal block(BLOCK_MIN_SIZE) or more,
+     *      If calculated padding is so big that it by itself can contain a whole minimal block(EMBLOCK_MIN_SIZE) or more,
      *       we need to create the new block. It will allow us to reuse that, in other case wasted, memory if needed.
      * 2. Alignment padding after user data:
      *      After allocating the requested size, we need to check if there is enough space left in the tail block to create a new free block.
@@ -1718,7 +2048,7 @@ static void *alloc_in_tail_full(EM *em, size_t size, size_t alignment) {
     // If alignment padding is bigger than easy memory alignment, 
     //  it may be possible to create a new block before user data
     if (alignment > em_get_alignment(em) && padding > 0) {
-        if (padding >= BLOCK_MIN_SIZE) {
+        if (padding >= EMBLOCK_MIN_SIZE) {
             set_size(tail, padding - sizeof(Block));
             Block *free_blocks_root = em_get_free_blocks(em);
             free_blocks_root = insert_block(free_blocks_root, tail);
@@ -1738,13 +2068,13 @@ static void *alloc_in_tail_full(EM *em, size_t size, size_t alignment) {
 
     // Check if we can allocate with end padding for next block
     size_t final_needed_block_size = minimal_needed_block_size;
-    if (free_space - minimal_needed_block_size >= BLOCK_MIN_SIZE) {
+    if (free_space - minimal_needed_block_size >= EMBLOCK_MIN_SIZE) {
         uintptr_t raw_data_end_ptr = aligned_data_ptr + size;
         uintptr_t aligned_data_end_ptr = align_up(raw_data_end_ptr + sizeof(Block), em_get_alignment(em)) - sizeof(Block);
         size_t end_padding = aligned_data_end_ptr - raw_data_end_ptr;
     
         size_t full_needed_block_size = minimal_needed_block_size + end_padding;
-        if (free_space - full_needed_block_size >= BLOCK_MIN_SIZE) {
+        if (free_space - full_needed_block_size >= EMBLOCK_MIN_SIZE) {
             final_needed_block_size = full_needed_block_size;
         } else {
             // we ignore coverage for this line cose it`s have very low chance to happen in real usage
@@ -1772,7 +2102,7 @@ static void *alloc_in_tail_full(EM *em, size_t size, size_t alignment) {
     set_size(tail, final_needed_block_size);
     set_is_free(tail, false);
     set_magic(tail, (void *)aligned_data_ptr);
-    set_color(tail, RED);
+    set_color(tail, EMRED);
     set_em(tail, em);
 
     // If there is remaining free space, create a new free block
@@ -1792,7 +2122,7 @@ static void *alloc_in_tail_full(EM *em, size_t size, size_t alignment) {
  * Free scratch memory in easy memory
  * Marks the scratch memory as free
  */
-void em_free_scratch(EM *em) {
+EMDEF void em_free_scratch(EM *em) {
     if (!em || !em_get_has_scratch(em)) return;
 
     em_set_has_scratch(em, false);
@@ -1804,9 +2134,15 @@ void em_free_scratch(EM *em) {
  * Marks the block as free, merges it with adjacent free blocks if possible,
  * and updates the free block list
  */
-void em_free(void *data) {
-    if (!data) return;
-    if ((uintptr_t)data % sizeof(uintptr_t) != 0) return;
+EMDEF void em_free(void *data) {
+    #if EM_SAFETY_LEVEL >= 1
+        if (!data) return;
+        if ((uintptr_t)data % sizeof(uintptr_t) != 0) return;
+    #else
+        EM_ASSERT((data != NULL) && "Internal Error: 'em_free' called on NULL pointer");
+        EM_ASSERT(((uintptr_t)data % sizeof(uintptr_t) == 0) && "Internal Error: 'em_free' called on unaligned pointer");
+    #endif
+
 
     Block *block = NULL;
 
@@ -1833,21 +2169,29 @@ void em_free(void *data) {
         if ((uintptr_t)check % sizeof(uintptr_t) != 0) return;
         block = (Block *)check;
     }
-    
-    EM_ASSERT((block != NULL) && "Internal Error: 'em_free' detected NULL block");
-    
-    // If block size is bigger than SIZE_MASK, it's invalid
-    if (get_size(block) > SIZE_MASK) return;
-    // If block is already free, it's invalid
-    if (get_is_free(block)) return;
-    // If magic is invalid, it's invalid
-    if (!is_valid_magic(block, data)) return;
-    
-    EM *em = get_em(block);
-    
-    EM_ASSERT((em != NULL) && "Internal Error: 'em_free' detected block with NULL em");
 
-    if (!is_block_within_em(em, block)) return;
+    #if EM_SAFETY_LEVEL >= 2
+        EM_ASSERT((block != NULL) && "Internal Error: 'em_free' detected NULL block");
+        
+        // If block size is bigger than EMSIZE_MASK, it's invalid
+        if (get_size(block) > EMSIZE_MASK) return;
+        // If block is already free, it's invalid
+        // If magic is invalid, it's invalid
+        if (!is_valid_magic(block, data)) return;
+        
+        EM *em = get_em(block);
+        
+        EM_ASSERT((em != NULL) && "Internal Error: 'em_free' detected block with NULL em");
+        
+        if (!is_block_within_em(em, block)) return;
+    #else
+        EM *em = get_em(block); 
+    #endif
+        
+    #if EM_SAFETY_LEVEL >= 1
+        if (get_is_free(block)) return;
+    #endif
+        
 
     em_free_block_full(em, block);
 }
@@ -1856,10 +2200,19 @@ void em_free(void *data) {
  * Allocate memory in the easy memory with custom alignment
  * Returns NULL if there is not enough space
  */
-void *em_alloc_aligned(EM *em, size_t size, size_t alignment) {
-    if (!em || size == 0 || size > em_get_capacity(em)) return NULL;
-    if ((alignment & (alignment - 1)) != 0) return NULL;
-    if (alignment < MIN_ALIGNMENT || alignment > MAX_ALIGNMENT) return NULL;
+EMDEF void *em_alloc_aligned(EM *EM_RESTRICT em, size_t size, size_t alignment) {
+    #if EM_SAFETY_LEVEL >= 1
+        if (!em || size == 0 || size > em_get_capacity(em)) return NULL;
+        if ((alignment & (alignment - 1)) != 0) return NULL;
+        if (alignment < EMMIN_ALIGNMENT || alignment > EMMAX_ALIGNMENT) return NULL;
+    #else
+        EM_ASSERT((em != NULL)                           && "Internal Error: 'em_alloc_aligned' called on NULL easy memory");
+        EM_ASSERT((size > 0)                             && "Internal Error: 'em_alloc_aligned' called on too small size");
+        EM_ASSERT((size <= em_get_capacity(em))          && "Internal Error: 'em_alloc_aligned' called on too big size");
+        EM_ASSERT(((alignment & (alignment - 1)) == 0)   && "Internal Error: 'em_alloc_aligned' called on invalid alignment");
+        EM_ASSERT((alignment >= EMMIN_ALIGNMENT)         && "Internal Error: 'em_alloc_aligned' called on too small alignment");
+        EM_ASSERT((alignment <= EMMAX_ALIGNMENT)         && "Internal Error: 'em_alloc_aligned' called on too big alignment");
+    #endif
 
     // Trying to allocate in free blocks first
     void *result = alloc_in_free_blocks(em, size, alignment);
@@ -1873,8 +2226,13 @@ void *em_alloc_aligned(EM *em, size_t size, size_t alignment) {
  * Allocate memory in the easy memory with default alignment
  * Returns NULL if there is not enough space
  */
-void *em_alloc(EM *em, size_t size) {
-    if (!em) return NULL;
+EMDEF void *em_alloc(EM *EM_RESTRICT em, size_t size) {
+    #if EM_SAFETY_LEVEL >= 1
+        if (!em) return NULL;
+    #else
+        EM_ASSERT((em != NULL) && "Internal Error: 'em_alloc' called on NULL easy memory");
+    #endif
+
     return em_alloc_aligned(em, size, em_get_alignment(em));
 }
 
@@ -1882,15 +2240,26 @@ void *em_alloc(EM *em, size_t size) {
  * Allocate scratch memory in the physical end of easy memory with custom alignment
  * Returns NULL if there is not enough space or scratch memory is already allocated
  */
-void *em_alloc_scratch_aligned(EM *em, size_t size, size_t alignment) {
-    if (!em || size == 0 || em_get_has_scratch(em) || size > em_get_capacity(em)) return NULL;
-    if ((alignment & (alignment - 1)) != 0) return NULL;
-    if (alignment < MIN_ALIGNMENT || alignment > MAX_ALIGNMENT) return NULL;
-    if (size > free_size_in_tail(em)) return NULL;
+EMDEF void *em_alloc_scratch_aligned(EM *EM_RESTRICT em, size_t size, size_t alignment) {
+    #if EM_SAFETY_LEVEL >= 1
+        if (!em || size == 0 || em_get_has_scratch(em) || size > em_get_capacity(em)) return NULL;
+        if ((alignment & (alignment - 1)) != 0) return NULL;
+        if (alignment < EMMIN_ALIGNMENT || alignment > EMMAX_ALIGNMENT) return NULL;
+        if (size > free_size_in_tail(em)) return NULL;
+    #else
+        EM_ASSERT((em != NULL)                           && "Internal Error: 'em_alloc_scratch_aligned' called on NULL easy memory");
+        EM_ASSERT((size > 0)                             && "Internal Error: 'em_alloc_scratch_aligned' called on too small size");
+        EM_ASSERT((!em_get_has_scratch(em))              && "Internal Error: 'em_alloc_scratch_aligned' called when scratch already allocated");
+        EM_ASSERT((size <= em_get_capacity(em))          && "Internal Error: 'em_alloc_scratch_aligned' called on too big size");
+        EM_ASSERT(((alignment & (alignment - 1)) == 0)   && "Internal Error: 'em_alloc_scratch_aligned' called on invalid alignment");
+        EM_ASSERT((alignment >= EMMIN_ALIGNMENT)         && "Internal Error: 'em_alloc_scratch_aligned' called on too small alignment");
+        EM_ASSERT((alignment <= EMMAX_ALIGNMENT)         && "Internal Error: 'em_alloc_scratch_aligned' called on too big alignment");
+        EM_ASSERT((size <= free_size_in_tail(em))        && "Internal Error: 'em_alloc_scratch_aligned' called on too big size for scratch");
+    #endif
 
     uintptr_t raw_end_of_em = (uintptr_t)em + em_get_capacity(em);
     uintptr_t end_of_em = raw_end_of_em;
-    end_of_em = align_down(end_of_em, MIN_ALIGNMENT);
+    end_of_em = align_down(end_of_em, EMMIN_ALIGNMENT);
     
     end_of_em -= sizeof(uintptr_t);
     uintptr_t scratch_size_spot = end_of_em;
@@ -1927,8 +2296,13 @@ void *em_alloc_scratch_aligned(EM *em, size_t size, size_t alignment) {
  * Allocate scratch memory in the physical end of easy memory with default alignment
  * Returns NULL if there is not enough space or scratch memory is already allocated
  */
-void *em_alloc_scratch(EM *em, size_t size) {
-    if (!em) return NULL;
+EMDEF void *em_alloc_scratch(EM *EM_RESTRICT em, size_t size) {
+    #if EM_SAFETY_LEVEL >= 1
+        if (!em) return NULL;
+    #else
+        EM_ASSERT((em != NULL) && "Internal Error: 'em_alloc_scratch' called on NULL easy memory");
+    #endif  
+
     return em_alloc_scratch_aligned(em, size, em_get_alignment(em));
 }
 
@@ -1936,12 +2310,20 @@ void *em_alloc_scratch(EM *em, size_t size) {
  * Allocate zero-initialized memory in the easy memory
  * Returns NULL if there is not enough space or overflow is detected
  */
-void *em_calloc(EM *em, size_t nmemb, size_t size) {
-    if (!em) return NULL;
+EMDEF void *em_calloc(EM *EM_RESTRICT em, size_t nmemb, size_t size) {
+    #if EM_SAFETY_LEVEL >= 1
+        if (!em) return NULL;
 
-    if (nmemb > 0 && (SIZE_MAX / nmemb) < size) {
-        return NULL; // Overflow detected
-    }
+        if (nmemb > 0 && (SIZE_MAX / nmemb) < size) {
+            return NULL; // Overflow detected
+        }
+    #else
+        EM_ASSERT((em != NULL) && "Internal Error: 'em_calloc' called on NULL easy memory");
+        if (nmemb > 0 && (SIZE_MAX / nmemb) < size) {
+            EM_ASSERT(false && "Internal Error: 'em_calloc' detected size overflow");
+            return NULL; // Overflow detected
+        }
+    #endif
 
     size_t total_size = nmemb * size;
     void *ptr = em_alloc(em, total_size);
@@ -1956,16 +2338,25 @@ void *em_calloc(EM *em, size_t nmemb, size_t size) {
  * Initializes an easy memory using preallocated memory and sets up the first block
  * Returns NULL if the provided size is too small, memory is NULL or size is negative
  */
-EM *em_create_static_aligned(void *memory, size_t size, size_t alignment) {
-    if (!memory || size < EM_MIN_SIZE || size > SIZE_MASK) return NULL;
-    if ((alignment & (alignment - 1)) != 0) return NULL;
-    if (alignment < MIN_ALIGNMENT|| alignment > MAX_ALIGNMENT) return NULL;
+EMDEF EM *em_create_static_aligned(void *EM_RESTRICT memory, size_t size, size_t alignment) {
+    #if EM_SAFETY_LEVEL >= 1
+        if (!memory || size < EMMIN_SIZE || size > EMSIZE_MASK) return NULL;
+        if ((alignment & (alignment - 1)) != 0) return NULL;
+        if (alignment < EMMIN_ALIGNMENT || alignment > EMMAX_ALIGNMENT) return NULL;
+    #else
+        EM_ASSERT((memory != NULL)                       && "Internal Error: 'em_create_static_aligned' called with NULL memory");
+        EM_ASSERT((size >= EMMIN_SIZE)                   && "Internal Error: 'em_create_static_aligned' called with too small size");
+        EM_ASSERT((size <= EMSIZE_MASK)                  && "Internal Error: 'em_create_static_aligned' called with too big size");
+        EM_ASSERT(((alignment & (alignment - 1)) == 0)   && "Internal Error: 'em_create_static_aligned' called with invalid alignment");
+        EM_ASSERT((alignment >= EMMIN_ALIGNMENT)         && "Internal Error: 'em_create_static_aligned' called with too small alignment");
+        EM_ASSERT((alignment <= EMMAX_ALIGNMENT)         && "Internal Error: 'em_create_static_aligned' called with too big alignment");
+    #endif
 
     uintptr_t raw_addr = (uintptr_t)memory;
-    uintptr_t aligned_addr = align_up(raw_addr, MIN_ALIGNMENT);
+    uintptr_t aligned_addr = align_up(raw_addr, EMMIN_ALIGNMENT);
     size_t em_padding = aligned_addr - raw_addr; 
 
-    if (size < em_padding + sizeof(EM) + BLOCK_MIN_SIZE) return NULL;
+    if (size < em_padding + sizeof(EM) + EMBLOCK_MIN_SIZE) return NULL;
     
     EM *em = (EM *)aligned_addr;
 
@@ -2031,7 +2422,13 @@ EM *em_create_static_aligned(void *memory, size_t size, size_t alignment) {
  * Initializes an easy memory using preallocated memory with default alignment
  * Returns NULL if the provided size is too small, memory is NULL or size is negative
  */
-EM *em_create_static(void *memory, size_t size) {
+EMDEF EM *em_create_static(void *EM_RESTRICT memory, size_t size) {
+    #if EM_SAFETY_LEVEL >= 1
+        if (!memory) return NULL;
+    #else
+        EM_ASSERT((memory != NULL) && "Internal Error: 'em_create_static' called with NULL memory");
+    #endif
+
     return em_create_static_aligned(memory, size, EM_DEFAULT_ALIGNMENT);
 }
 
@@ -2041,10 +2438,18 @@ EM *em_create_static(void *memory, size_t size) {
  * Allocates memory for the easy memory and initializes it with the specified size and alignment
  * Returns NULL if the provided size is too small, memory allocation fails or size is negative
  */
-EM *em_create_aligned(size_t size, size_t alignment) {
-    if (size < BLOCK_MIN_SIZE || size > SIZE_MASK) return NULL;
-    if ((alignment & (alignment - 1)) != 0) return NULL;
-    if (alignment < MIN_ALIGNMENT|| alignment > MAX_ALIGNMENT) return NULL;
+EMDEF EM *em_create_aligned(size_t size, size_t alignment) {
+    #if EM_SAFETY_LEVEL >= 1
+        if (size < EMBLOCK_MIN_SIZE || size > EMSIZE_MASK) return NULL;
+        if ((alignment & (alignment - 1)) != 0) return NULL;
+        if (alignment < EMMIN_ALIGNMENT|| alignment > EMMAX_ALIGNMENT) return NULL;
+    #else
+        EM_ASSERT((size >= EMBLOCK_MIN_SIZE)             && "Internal Error: 'em_create_aligned' called with too small size");
+        EM_ASSERT((size <= EMSIZE_MASK)                  && "Internal Error: 'em_create_aligned' called with too big size");
+        EM_ASSERT(((alignment & (alignment - 1)) == 0)   && "Internal Error: 'em_create_aligned' called with invalid alignment");
+        EM_ASSERT((alignment >= EMMIN_ALIGNMENT)         && "Internal Error: 'em_create_aligned' called with too small alignment");
+        EM_ASSERT((alignment <= EMMAX_ALIGNMENT)         && "Internal Error: 'em_create_aligned' called with too big alignment");
+    #endif
 
     void *data = malloc(size + sizeof(EM) + alignment);
     if (!data) return NULL;
@@ -2068,7 +2473,7 @@ EM *em_create_aligned(size_t size, size_t alignment) {
  * Allocates memory for the easy memory and initializes it with the specified size and default alignment
  * Returns NULL if the provided size is too small, memory allocation fails or size is negative
  */
-EM *em_create(size_t size) {
+EMDEF EM *em_create(size_t size) {
     return em_create_aligned(size, EM_DEFAULT_ALIGNMENT);
 }
 #endif // EM_NO_MALLOC
@@ -2078,8 +2483,13 @@ EM *em_create(size_t size) {
  * Deallocates the memory used by the easy memory if it was allocated in heap
  * Can be safely called with static easy memories (no operation in that case)
  */
-void em_destroy(EM *em) {
-    if (!em) return;
+EMDEF void em_destroy(EM *em) {
+    #if EM_SAFETY_LEVEL >= 1
+        if (!em) return;
+    #else
+        EM_ASSERT((em != NULL) && "Internal Error: 'em_destroy' called on NULL easy memory");
+    #endif
+
     if (em_get_is_nested(em)) {
         EM *parent = get_parent_em((Block *)em);
         em_free_block_full(parent, (Block *)em); 
@@ -2097,8 +2507,12 @@ void em_destroy(EM *em) {
  * Reset the easy memory
  * Clears the easy memory's blocks and resets it to the initial state without freeing memory
  */
-void em_reset(EM *em) {
-    if (!em) return;
+EMDEF void em_reset(EM *EM_RESTRICT em) {
+    #if EM_SAFETY_LEVEL >= 1
+        if (!em) return;
+    #else
+        EM_ASSERT((em != NULL) && "Internal Error: 'em_reset' called on NULL easy memory");
+    #endif
 
     Block *first_block = em_get_first_block(em);
 
@@ -2106,7 +2520,7 @@ void em_reset(EM *em) {
     set_size(first_block, 0);
     set_prev(first_block, NULL);
     set_is_free(first_block, true);
-    set_color(first_block, RED);
+    set_color(first_block, EMRED);
     set_left_tree(first_block, NULL);
     set_right_tree(first_block, NULL);
 
@@ -2120,8 +2534,13 @@ void em_reset(EM *em) {
  * Reset the easy memory and set its tail to zero
  * clears the easy memory's blocks and resets it to the initial state with zeroing all the memory
  */
-void em_reset_zero(EM *em) {
-    if (!em) return;
+EMDEF void em_reset_zero(EM *EM_RESTRICT em) {
+    #if EM_SAFETY_LEVEL >= 1
+        if (!em) return;
+    #else
+        EM_ASSERT((em != NULL) && "Internal Error: 'em_reset_zero' called on NULL easy memory");
+    #endif
+
     em_reset(em); // Reset easy memory
     memset(block_data(em_get_tail(em)), 0, free_size_in_tail(em)); // Set tail to zero
 }
@@ -2131,11 +2550,20 @@ void em_reset_zero(EM *em) {
  * Allocates memory for a nested easy memory from a parent easy memory and initializes it
  * Returns NULL if the parent easy memory is NULL, requested size is too small, or allocation fails
  */
-EM *em_create_nested_aligned(EM *parent_em, size_t size, size_t alignment) {
-    if (!parent_em || size < BLOCK_MIN_SIZE || size > SIZE_MASK) return NULL;
-    if ((alignment & (alignment - 1)) != 0) return NULL;
-    if (alignment < MIN_ALIGNMENT|| alignment > MAX_ALIGNMENT) return NULL;
-    
+EMDEF EM *em_create_nested_aligned(EM *EM_RESTRICT parent_em, size_t size, size_t alignment) {
+    #if EM_SAFETY_LEVEL >= 1
+        if (!parent_em || size < EMBLOCK_MIN_SIZE || size > EMSIZE_MASK) return NULL;
+        if ((alignment & (alignment - 1)) != 0) return NULL;
+        if (alignment < EMMIN_ALIGNMENT|| alignment > EMMAX_ALIGNMENT) return NULL;
+    #else
+        EM_ASSERT((parent_em != NULL)                    && "Internal Error: 'em_create_nested_aligned' called with NULL parent easy memory");
+        EM_ASSERT((size >= EMBLOCK_MIN_SIZE)             && "Internal Error: 'em_create_nested_aligned' called with too small size");
+        EM_ASSERT((size <= EMSIZE_MASK)                  && "Internal Error: 'em_create_nested_aligned' called with too big size");
+        EM_ASSERT(((alignment & (alignment - 1)) == 0)   && "Internal Error: 'em_create_nested_aligned' called with invalid alignment");
+        EM_ASSERT((alignment >= EMMIN_ALIGNMENT)         && "Internal Error: 'em_create_nested_aligned' called with too small alignment");
+        EM_ASSERT((alignment <= EMMAX_ALIGNMENT)         && "Internal Error: 'em_create_nested_aligned' called with too big alignment");
+    #endif
+
     void *data = em_alloc(parent_em, size);  // Allocate memory from the parent easy memory
     if (!data) return NULL;
 
@@ -2163,8 +2591,12 @@ EM *em_create_nested_aligned(EM *parent_em, size_t size, size_t alignment) {
  * Allocates memory for a nested easy memory from a parent easy memory and initializes it
  * Returns NULL if the parent easy memory is NULL, requested size is too small, or allocation fails
  */
-EM *em_create_nested(EM *parent_em, size_t size) {
-    if (!parent_em || size < BLOCK_MIN_SIZE || size > SIZE_MASK) return NULL;
+EMDEF EM *em_create_nested(EM *EM_RESTRICT parent_em, size_t size) {
+    #if EM_SAFETY_LEVEL >= 1
+        if (!parent_em) return NULL;
+    #else
+        EM_ASSERT((parent_em != NULL) && "Internal Error: 'em_create_nested' called with NULL parent easy memory");
+    #endif
 
     return em_create_nested_aligned(parent_em, size, em_get_alignment(parent_em));
 }
@@ -2174,11 +2606,21 @@ EM *em_create_nested(EM *parent_em, size_t size) {
  * Allocates scratch memory for a nested easy memory from a parent easy memory and initializes it
  * Returns NULL if the parent easy memory is NULL, requested size is too small, or allocation fails
  */
-EM *em_create_scratch_aligned(EM *parent_em, size_t size, size_t alignment) {
-    if (!parent_em || em_get_has_scratch(parent_em) || size < BLOCK_MIN_SIZE || size > SIZE_MASK) return NULL;
-    if ((alignment & (alignment - 1)) != 0) return NULL;
-    if (alignment < MIN_ALIGNMENT|| alignment > MAX_ALIGNMENT) return NULL;
-    
+EMDEF EM *em_create_scratch_aligned(EM *EM_RESTRICT parent_em, size_t size, size_t alignment) {
+    #if EM_SAFETY_LEVEL >= 1
+        if (!parent_em || em_get_has_scratch(parent_em) || size < EMBLOCK_MIN_SIZE || size > EMSIZE_MASK) return NULL;
+        if ((alignment & (alignment - 1)) != 0) return NULL;
+        if (alignment < EMMIN_ALIGNMENT|| alignment > EMMAX_ALIGNMENT) return NULL;
+    #else
+        EM_ASSERT((parent_em != NULL)                    && "Internal Error: 'em_create_scratch_aligned' called with NULL parent easy memory");
+        EM_ASSERT((!em_get_has_scratch(parent_em))       && "Internal Error: 'em_create_scratch_aligned' called when scratch already allocated in parent");
+        EM_ASSERT((size >= EMBLOCK_MIN_SIZE)             && "Internal Error: 'em_create_scratch_aligned' called with too small size");
+        EM_ASSERT((size <= EMSIZE_MASK)                  && "Internal Error: 'em_create_scratch_aligned' called with too big size");
+        EM_ASSERT(((alignment & (alignment - 1)) == 0)   && "Internal Error: 'em_create_scratch_aligned' called with invalid alignment");
+        EM_ASSERT((alignment >= EMMIN_ALIGNMENT)         && "Internal Error: 'em_create_scratch_aligned' called with too small alignment");
+        EM_ASSERT((alignment <= EMMAX_ALIGNMENT)         && "Internal Error: 'em_create_scratch_aligned' called with too big alignment");
+    #endif
+        
     void *data = em_alloc_scratch_aligned(parent_em, size, alignment);  // Allocate memory from the parent easy memory scratch
     if (!data) return NULL;
 
@@ -2196,8 +2638,13 @@ EM *em_create_scratch_aligned(EM *parent_em, size_t size, size_t alignment) {
  * Allocates scratch memory for a nested easy memory from a parent easy memory and initializes it
  * Returns NULL if the parent easy memory is NULL, requested size is too small, or allocation fails
  */
-EM *em_create_scratch(EM *parent_em, size_t size) {
-    if (!parent_em) return NULL;
+EMDEF EM *em_create_scratch(EM *EM_RESTRICT parent_em, size_t size) {
+    #if EM_SAFETY_LEVEL >= 1
+        if (!parent_em) return NULL;
+    #else
+        EM_ASSERT((parent_em != NULL) && "Internal Error: 'em_create_scratch' called with NULL parent easy memory");
+    #endif
+
     return em_create_scratch_aligned(parent_em, size, em_get_alignment(parent_em));
 }
 
@@ -2210,10 +2657,16 @@ EM *em_create_scratch(EM *parent_em, size_t size) {
  * Initializes a bump allocator within a parent easy memory
  * Returns NULL if the parent easy memory is NULL, requested size is too small, or allocation fails
  */
-Bump *em_create_bump(EM *parent_em, size_t size) {
-    if (!parent_em) return NULL;
-    if (size > SIZE_MASK || size < EM_MIN_BUFFER_SIZE) return NULL;  // Check for minimal reasonable size
-    
+EMDEF Bump *em_create_bump(EM *EM_RESTRICT parent_em, size_t size) {
+    #if EM_SAFETY_LEVEL >= 1
+        if (!parent_em) return NULL;
+        if (size > EMSIZE_MASK || size < EM_MIN_BUFFER_SIZE) return NULL;  // Check for minimal reasonable size
+    #else
+        EM_ASSERT((parent_em != NULL)                  && "Internal Error: 'em_create_bump' called with NULL parent easy memory");
+        EM_ASSERT((size <= EMSIZE_MASK)                 && "Internal Error: 'em_create_bump' called with too big size");
+        EM_ASSERT((size >= EM_MIN_BUFFER_SIZE)          && "Internal Error: 'em_create_bump' called with too small size");
+    #endif
+
     void *data = em_alloc(parent_em, size);  // Allocate memory from the parent easy memory
     if (!data) return NULL;
 
@@ -2243,8 +2696,12 @@ Bump *em_create_bump(EM *parent_em, size_t size) {
  * Returns a pointer to the allocated memory or NULL if allocation fails
  * May return NOT aligned pointer
  */
-void *em_bump_alloc(Bump *bump, size_t size) {
-    if (!bump) return NULL;
+EMDEF void *em_bump_alloc(Bump *EM_RESTRICT bump, size_t size) {
+    #if EM_SAFETY_LEVEL >= 1
+        if (!bump) return NULL;
+    #else
+        EM_ASSERT((bump != NULL) && "Internal Error: 'em_bump_alloc' called on NULL bump allocator");
+    #endif
     
     size_t offset = bump_get_offset(bump);
     if (size == 0 || size >= (bump_get_capacity(bump) - offset + sizeof(Bump))) return NULL;
@@ -2259,11 +2716,19 @@ void *em_bump_alloc(Bump *bump, size_t size) {
  * Allocate aligned memory from a bump allocator
  * Returns a pointer to the allocated memory or NULL if allocation fails
  */
-void *em_bump_alloc_aligned(Bump *bump, size_t size, size_t alignment) {
-    if (!bump) return NULL;
-    if ((alignment & (alignment - 1)) != 0) return NULL;
-    if (alignment < MIN_ALIGNMENT|| alignment > MAX_ALIGNMENT) return NULL;
-    if (size == 0) return NULL;
+EMDEF void *em_bump_alloc_aligned(Bump *EM_RESTRICT bump, size_t size, size_t alignment) {
+    #if EM_SAFETY_LEVEL >= 1
+        if (!bump) return NULL;
+        if ((alignment & (alignment - 1)) != 0) return NULL;
+        if (alignment < EMMIN_ALIGNMENT|| alignment > EMMAX_ALIGNMENT) return NULL;
+        if (size == 0) return NULL;
+    #else
+        EM_ASSERT((bump != NULL)                         && "Internal Error: 'em_bump_alloc_aligned' called on NULL bump allocator");
+        EM_ASSERT(((alignment & (alignment - 1)) == 0)   && "Internal Error: 'em_bump_alloc_aligned' called with invalid alignment");
+        EM_ASSERT((alignment >= EMMIN_ALIGNMENT)         && "Internal Error: 'em_bump_alloc_aligned' called with too small alignment");
+        EM_ASSERT((alignment <= EMMAX_ALIGNMENT)         && "Internal Error: 'em_bump_alloc_aligned' called with too big alignment");
+        EM_ASSERT((size > 0)                             && "Internal Error: 'em_bump_alloc_aligned' called with zero size");
+    #endif
 
     uintptr_t current_ptr = (uintptr_t)bump + bump_get_offset(bump);
     uintptr_t aligned_ptr = align_up(current_ptr, alignment);
@@ -2285,8 +2750,12 @@ void *em_bump_alloc_aligned(Bump *bump, size_t size, size_t alignment) {
  * Trim a bump allocator
  * Trims the bump allocator and return free part back to easy memory
  */
-void em_bump_trim(Bump *bump) {
-    if (!bump) return;
+EMDEF void em_bump_trim(Bump *EM_RESTRICT bump) {
+    #if EM_SAFETY_LEVEL >= 1
+        if (!bump) return;
+    #else
+        EM_ASSERT((bump != NULL) && "Internal Error: 'em_bump_trim' called on NULL bump allocator");
+    #endif
 
     EM *parent = bump_get_em(bump);
     size_t parent_align = em_get_alignment(parent);
@@ -2307,8 +2776,12 @@ void em_bump_trim(Bump *bump) {
  * Reset a bump allocator
  * Resets the bump allocator's offset to the beginning
  */
-void em_bump_reset(Bump *bump) {
-    if (!bump) return;
+EMDEF void em_bump_reset(Bump *EM_RESTRICT bump) {
+    #if EM_SAFETY_LEVEL >= 1
+        if (!bump) return;
+    #else
+        EM_ASSERT((bump != NULL) && "Internal Error: 'em_bump_reset' called on NULL bump allocator");
+    #endif
     
     bump_set_offset(bump, sizeof(Bump));
 }
@@ -2317,8 +2790,12 @@ void em_bump_reset(Bump *bump) {
  * Destroy a bump allocator
  * Returns memory back to parent easy memory
  */
-void em_bump_destroy(Bump *bump) {
-    if (!bump) return;
+EMDEF void em_bump_destroy(Bump *bump) {
+    #if EM_SAFETY_LEVEL >= 1
+        if (!bump) return;
+    #else
+        EM_ASSERT((bump != NULL) && "Internal Error: 'em_bump_destroy' called on NULL bump allocator");
+    #endif
 
     em_free_block_full(bump_get_em(bump), (Block *)(void *)bump);
 }
@@ -2340,7 +2817,7 @@ void em_bump_destroy(Bump *bump) {
  * Helper function to print LLRB tree structure
  * Recursively prints the tree with indentation to show hierarchy
  */
-void print_llrb_tree(Block *node, int depth) {
+EMDEF void print_llrb_tree(Block *node, int depth) {
     if (node == NULL) return;
     
     // Print right subtree first (to display tree horizontally)
@@ -2362,7 +2839,7 @@ void print_llrb_tree(Block *node, int depth) {
  * Outputs the current state of the easy memory and its blocks, including free blocks
  * Useful for debugging and understanding memory usage
  */
-void print_em(EM *em) {
+EMDEF void print_em(EM *em) {
     if (!em) return;
     PRINTF(T("Easy Memory: %p\n"), em);
     PRINTF(T("EM Full Size: %zu\n"), em_get_capacity(em) + sizeof(EM));
@@ -2423,7 +2900,7 @@ void print_em(EM *em) {
  * Displays a bar chart of the easy memory's usage, including free blocks, occupied data, and metadata
  * Uses ANSI escape codes to colorize the visualization
  */
-void print_fancy(EM *em, size_t bar_size) {
+EMDEF void print_fancy(EM *em, size_t bar_size) {
     if (!em) return;
     
     size_t total_size = em_get_capacity(em);

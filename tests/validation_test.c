@@ -121,7 +121,7 @@ void test_boundary_conditions(void) {
     TEST_PHASE("Boundary Conditions");
 
     TEST_CASE("EM size just above minimum");
-    size_t min_size = EM_MIN_SIZE;
+    size_t min_size = EMMIN_SIZE;
     EM *min_size_em = em_create(min_size);
     ASSERT(min_size_em != NULL, "EM with minimum valid size should succeed");
     em_destroy(min_size_em);
@@ -172,7 +172,7 @@ void test_full_em_allocation(void) {
 
     // Create an EM with minimal valid size
     // Size = EM metadata + one Block metadata + minimal usable buffer
-    size_t min_valid_size = BLOCK_MIN_SIZE + EM_DEFAULT_ALIGNMENT;
+    size_t min_valid_size = EMBLOCK_MIN_SIZE + EM_DEFAULT_ALIGNMENT;
     EM *em = em_create(min_valid_size);
     ASSERT(em != NULL, "EM creation with minimal size should succeed");
     #ifdef DEBUG
@@ -736,7 +736,7 @@ void test_tail_alloc_edge_case_deterministic(void) {
     void *mem = (void*)align_up((uintptr_t)raw, 64);
     EM *em = em_create_static_aligned(mem, 256, 16);
 
-    size_t target_remainder = BLOCK_MIN_SIZE + 12;
+    size_t target_remainder = EMBLOCK_MIN_SIZE + 12;
     size_t initial_free = free_size_in_tail(em);
     em_alloc(em, initial_free - target_remainder);
     void *p2 = em_alloc(em, 4);
@@ -833,7 +833,7 @@ void test_invalid_scratch_allocation(void) {
     ASSERT(huge_scratch_allocation == NULL, "Scratch allocation larger than EM size should fail");
 
     TEST_CASE("Alignment larger than MAX_ALIGNMENT");
-    void *bad_align_alloc = em_alloc_scratch_aligned(em, 32, 32 + MAX_ALIGNMENT);
+    void *bad_align_alloc = em_alloc_scratch_aligned(em, 32, 32 + EMMAX_ALIGNMENT);
     ASSERT(bad_align_alloc == NULL, "Scratch allocation with alignment larger than MAX_ALIGNMENT should fail");
 
     TEST_CASE("Invalid alignment (not power of two)");

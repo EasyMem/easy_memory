@@ -17,6 +17,35 @@
 */
 
 /*
+ * ============================================================================
+ *  CONFIGURATION QUICK REFERENCE
+ * ============================================================================
+ *  Define these macros before including this header to customize behavior.
+ *
+ *  SAFETY & VERIFICATION:
+ *    #define EM_SAFETY_LEVEL <N>  // 0: Unchecked (Fastest), 1: Basic, 2: Paranoid (Default)
+ *    #define DEBUG                // Enables assertions and auto-enables poisoning
+ *    #define EM_ASSERT_PANIC      // Assertions call abort() (Hardened Release)
+ *    #define EM_ASSERT_OPTIMIZE   // Assertions are optimization hints (Danger!)
+ *    #define EM_ASSERT(cond)      // Override with custom assertion logic
+ *
+ *  MEMORY POISONING:
+ *    #define EM_POISONING         // Force ENABLE poisoning (even in Release)
+ *    #define EM_NO_POISONING      // Force DISABLE poisoning (even in Debug)
+ *    #define EM_POISON_BYTE 0xDD  // Custom byte pattern for freed memory
+ *
+ *  SYSTEM & LINKAGE:
+ *    #define EM_NO_MALLOC         // Disable stdlib dependencies (Bare Metal mode)
+ *    #define EM_STATIC            // Make all functions static (Private linkage)
+ *    #define EM_RESTRICT          // Override 'restrict' keyword definition
+ *
+ *  TUNING:
+ *    #define EM_DEFAULT_ALIGNMENT 16  // Global alignment baseline
+ *    #define EM_MIN_BUFFER_SIZE   16  // Minimum split block size
+ * ============================================================================
+*/
+
+/*
  * Configuration: C++ Compatibility Wrapper
  * Ensures the header can be included in both C and C++ projects without linkage issues.
 */

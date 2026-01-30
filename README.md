@@ -93,10 +93,10 @@ The backbone of the system. It handles the heavy lifting of block splitting, mer
 *   **Adaptive Strategy:** It doesn't blindly search the tree. If you allocate sequentially, it acts as a fast O(1) bump allocator using the tail block. If you free in LIFO order (stack-like), it merges instantaneously. It only falls back to the O(log n) Tree Search when memory becomes fragmented.
 *   **Triple-Key Tree:** When searching for gaps, it finds the *best* block not just by size, but by alignment quality, preserving large contiguous chunks.
 
-### 2. Scratchpad (Lifecycle Isolation) (Planned)
+### 2. Scratchpad (Lifecycle Isolation) (In Progress)
 A mechanism to allocate a **single dedicated block** at the very end of the memory pool (highest address).
 *   **Purpose:** Acts as an anchor point for temporary memory contexts. By placing a temporary sub-allocator (like `Bump` or `Nested Arena`) at the extreme end of memory, you maximize the contiguous space available for the main heap.
-*   **Universal API:** Supports raw memory (`em_alloc_scratch`) or sub-allocators (`em_create_bump_scratch`).
+*   **Universal API:** Supports raw memory (`em_alloc_scratch`), EM (`em_create_scratch`) or sub-allocators (`em_create_bump_scratch`)(Planned).
 *   **Symmetrical Lifecycle:** No special deallocation functions required. Resources allocated via scratchpad are freed using their standard counterparts (e.g., `em_create_bump_scratch` → `em_bump_destroy`, `em_alloc_scratch` → `em_free`).
 
 ### 3. Sub-Allocators
@@ -118,6 +118,13 @@ Once memory is allocated from the system, its address will **never** change duri
 
 ### Principle 2: Memory is Local (Performance by Default)
 The system allocates memory sequentially from large, contiguous chunks. This dramatically improves cache performance compared to standard `malloc`, which can scatter allocations across the heap.
+
+### Principle 3: Concurrency is Isolated (Lock-Free)
+Standard allocators often use global locks to protect the heap, causing thread contention and context switching overhead. `easy_memory` contains **no internal mutexes or atomics**.
+
+*   **The Model:** The library is designed for **Thread-Local Allocation** patterns. Each thread should own its own `EM` instance (or a dedicated nested scope).
+*   **The Benefit:** Zero synchronization overhead. Allocation speed remains deterministic and blazing fast regardless of the number of active threads.
+*   **Safety Note:** If multiple threads must share a single *parent* arena to create nested scopes, access to that parent must be externally synchronized. Once created, the nested arena is independent.
 
 ## Usage
 
@@ -230,15 +237,66 @@ void main() {
 ```
 
 ## Configuration
-Define these macros **before** including the header to customize behavior:
+
+Customize the library's behavior by defining macros **before** including `easy_memory.h`.
+
+### Runtime Safety (`EM_SAFETY_LEVEL`)
+
+Controls the balance between performance and verification overhead.
+
+| Level | Mode | Description | Recommended For |
+| :---: | :--- | :--- | :--- |
+| **0** | **UNCHECKED** | Skips non-critical checks (magic numbers, ownership validation). Maximum speed. | Embedded / High-Performance Release |
+| **1** | **BASIC** | Standard safety. Checks for NULL pointers, alignment validity, and size limits. | Desktop / Standard Release |
+| **2** | **PARANOID** | **(Default)** Full validation. Verifies magic numbers (XOR protection), block ownership, and double-free detection. | Development / Debugging |
+
+### Assertion Strategy
+
+Determines how the library handles internal invariant violations.
+
+| Macro | Effect on Failure | Usage |
+| :--- | :--- | :--- |
+| **(Default)** | No-op | Assertions are compiled out. Safe for release. |
+| `DEBUG` | Calls `assert()` | Standard C behavior. Aborts with file/line information. |
+| `EM_ASSERT_PANIC` | Calls `abort()` | Hardened release. Prevents exploitability on heap corruption without leaking debug info. |
+| `EM_ASSERT_OPTIMIZE`| `__builtin_unreachable()` | **DANGER**. Uses assertions as compiler optimization hints. UB if condition is false. |
+| `EM_ASSERT(cond)` | **Custom** | Define this macro to implement custom error handling (e.g., logging, infinite loop, hardware reset). Overrides all other assertion flags. |
+
+### Memory Poisoning
+
+Helps detect use-after-free and uninitialized memory usage.
+
+| Macro | Description |
+| :--- | :--- |
+| **(Default)** | Disabled in Release, Enabled in `DEBUG`. |
+| `EM_POISONING` | Force **ENABLE** poisoning (even in Release). Fills freed memory with `EM_POISON_BYTE`. |
+| `EM_NO_POISONING` | Force **DISABLE** poisoning (even in `DEBUG`). Useful for performance profiling in debug builds. |
+| `EM_POISON_BYTE` | The byte value used for poisoning (Default: `0xDD`). |
+
+### System & Linkage
+
+| Macro | Description |
+| :--- | :--- |
+| `EASY_MEMORY_IMPLEMENTATION` | **Required.** Expands the implementation in the current translation unit. |
+| `EM_NO_MALLOC` | Disables `stdlib.h` dependency. Removes heap-based `em_create`, leaving only `em_create_static`. Essential for **Bare Metal**. |
+| `EM_STATIC` | Declares all functions as `static`, limiting visibility to the current translation unit. |
+| `EM_RESTRICT` | Manually define the `restrict` keyword if your compiler does not support auto-detection. |
+
+### Fine-Tuning
 
 | Macro | Default | Description |
 | :--- | :--- | :--- |
-| **`EM_NO_MALLOC`** | *Unset* | Disables `stdlib.h` dependencies. Essential for bare-metal. |
-| **`EM_POISONING`** | *Auto* | Fills freed memory with `0xDD` in DEBUG builds. |
-| **`EM_MIN_BUFFER_SIZE`** | `16` | Minimum size of a free block split. |
-| **`EM_DEFAULT_ALIGNMENT`** | `16` | Minimum allocation alignment (must be power of two). |
+| `EM_DEFAULT_ALIGNMENT` | `16` | Baseline alignment for allocations (must be a power of two). |
+| `EM_MIN_BUFFER_SIZE` | `16` | Minimum usable size of a split block to prevent micro-fragmentation. |
 
+## Limitations & Roadmap
+
+### ⚠️ Stack Usage (Recursive Algorithms)
+The current implementation of the LLRB tree (insertion, deletion, and balancing) relies on **recursion**. 
+
+*   **Impact:** While efficient and readable, deep recursion may risk a **Stack Overflow** on severely constrained embedded platforms (e.g., AVR, Cortex-M0 with tiny stacks) if memory becomes highly fragmented, leading to a deep tree structure.
+*   **Mitigation:** On standard desktop/server environments or embedded systems with reasonable stack sizes, this is rarely an issue.
+*   **Call for Contribution:** Switching the LLRB logic to an **iterative (loop-based)** implementation is a high-priority goal to guarantee fixed stack usage. If you enjoy algorithmic challenges and non-recursive tree traversals, **Pull Requests are highly welcome!**
 
 ## Build Status & Verified Platforms
 

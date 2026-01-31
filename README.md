@@ -288,15 +288,26 @@ Helps detect use-after-free and uninitialized memory usage.
 | :--- | :--- | :--- |
 | `EM_DEFAULT_ALIGNMENT` | `16` | Baseline alignment for allocations (must be a power of two). |
 | `EM_MIN_BUFFER_SIZE` | `16` | Minimum usable size of a split block to prevent micro-fragmentation. |
+| `EM_MAGIC` | `0xDEADBEEF..` | Magic number used for block validation. Can be customized for uniqueness. |
 
 ## Limitations & Roadmap
 
-### ⚠️ Stack Usage (Recursive Algorithms)
+### ⚠️ Current Limitation: Stack Usage (Recursive Algorithms)
 The current implementation of the LLRB tree (insertion, deletion, and balancing) relies on **recursion**. 
 
 *   **Impact:** While efficient and readable, deep recursion may risk a **Stack Overflow** on severely constrained embedded platforms (e.g., AVR, Cortex-M0 with tiny stacks) if memory becomes highly fragmented, leading to a deep tree structure.
 *   **Mitigation:** On standard desktop/server environments or embedded systems with reasonable stack sizes, this is rarely an issue.
 *   **Call for Contribution:** Switching the LLRB logic to an **iterative (loop-based)** implementation is a high-priority goal to guarantee fixed stack usage. If you enjoy algorithmic challenges and non-recursive tree traversals, **Pull Requests are highly welcome!**
+
+### Upcoming Features
+The following features are planned for future releases, prioritized by architectural importance:
+
+- [ ] **New Sub-Allocators:**
+    - **`Stack` Allocator:** A strict LIFO (Last-In-First-Out) allocator for temporary scopes, faster and lighter than nested arenas.
+    - **`Slab` Allocator:** A fixed-size block pool, ideal for reducing fragmentation when allocating many identical objects.
+- [ ] **Benchmark Suite:** A comprehensive set of automated benchmarks to verify performance claims against `malloc` and other allocators across different architectures.
+- [ ] **Statistics & Telemetry:** Optional, configurable collection of runtime metrics (total allocated bytes, high water mark/peak usage, fragmentation index) to aid in profiling.
+- [ ] **`Queue` Sub-Allocator:** A specialized FIFO (First-In-First-Out) allocator implementation (Ring Buffer strategy).
 
 ## Build Status & Verified Platforms
 
@@ -342,6 +353,14 @@ This library has been verified to run correctly on embedded hardware without sta
 
 ## Why All This?
 *idk, i was bored*
+
+## Contributing
+
+Contributions are welcome! Whether it's a bug fix, a new feature, or an improvement to the documentation, your input is valued. 
+
+If you find an edge case on a specific architecture or want to improve the test coverage, feel free to open an issue or submit a Pull Request.
+
+**Memory management in C doesn't have to be hard. Let's make it *easy*, together.**
 
 ## License
 MIT License. See [LICENSE](LICENSE) for details.

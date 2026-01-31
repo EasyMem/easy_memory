@@ -40,6 +40,7 @@
  *    #define EM_RESTRICT          // Override 'restrict' keyword definition
  *
  *  TUNING:
+ *    #define EM_MAGIC <value>         // Custom magic number for block validation
  *    #define EM_DEFAULT_ALIGNMENT 16  // Global alignment baseline
  *    #define EM_MIN_BUFFER_SIZE   16  // Minimum split block size
  * ============================================================================
@@ -285,10 +286,26 @@ EM_STATIC_ASSERT((EM_POISON_BYTE >= 0x00) && (EM_POISON_BYTE <= 0xFF), "EM_POISO
  * Default is 16 bytes, but can be customized by defining EM_MIN_BUFFER_SIZE before including this header.
 */
 #ifndef EM_MIN_BUFFER_SIZE
-    // Default minimum buffer size for the single block.
 #   define EM_MIN_BUFFER_SIZE 16 
 #endif
 EM_STATIC_ASSERT(EM_MIN_BUFFER_SIZE > 0, "MIN_BUFFER_SIZE must be a positive value to prevent creation of useless zero-sized free blocks.");
+
+/*
+ * Configuration: Magic Number
+ * Unique identifier used to validate memory blocks and detect corruption.
+ * Default values are chosen based on pointer size to ensure uniqueness.
+ * Can be customized by defining EM_MAGIC before including this header.
+*/
+#ifndef EM_MAGIC
+#   if UINTPTR_MAX > 0xFFFFFFFF
+#       define EM_MAGIC 0xDEADBEEFDEADBEEFULL
+#   elif UINTPTR_MAX > 0xFFFF
+#       define EM_MAGIC 0xDEADBEEFUL
+#   else
+#       define EM_MAGIC 0xBEEFU
+#   endif
+#endif
+EM_STATIC_ASSERT((EM_MAGIC != 0), "EM_MAGIC must be a non-zero value to ensure effective block validation.");
 
 /*
  * Constant: Minimum Exponent
@@ -298,6 +315,7 @@ EM_STATIC_ASSERT(EM_MIN_BUFFER_SIZE > 0, "MIN_BUFFER_SIZE must be a positive val
 #   define EMMIN_EXPONENT (__builtin_ctz(sizeof(uintptr_t)))
 #else
 #   define EMMIN_EXPONENT ( \
+        (sizeof(uintptr_t) == 2) ? 2 : \
         (sizeof(uintptr_t) == 4) ? 2 : \
         (sizeof(uintptr_t) == 8) ? 3 : \
         4                              \
@@ -321,7 +339,9 @@ EM_STATIC_ASSERT(EM_MIN_BUFFER_SIZE > 0, "MIN_BUFFER_SIZE must be a positive val
  * Defines the default memory alignment for the easy memory allocator.
  * Default is 16 bytes, but can be customized by defining EM_DEFAULT_ALIGNMENT before including this header.
 */
-#define EM_DEFAULT_ALIGNMENT 16 // Default memory alignment
+#ifndef EM_DEFAULT_ALIGNMENT
+#   define EM_DEFAULT_ALIGNMENT 16
+#endif
 EM_STATIC_ASSERT((EM_DEFAULT_ALIGNMENT & (EM_DEFAULT_ALIGNMENT - 1)) == 0, "EM_DEFAULT_ALIGNMENT must be a power of two.");
 EM_STATIC_ASSERT(EM_DEFAULT_ALIGNMENT >= EMMIN_ALIGNMENT, "EM_DEFAULT_ALIGNMENT must be at least EMMIN_ALIGNMENT.");
 EM_STATIC_ASSERT(EM_DEFAULT_ALIGNMENT <= EMMAX_ALIGNMENT, "EM_DEFAULT_ALIGNMENT must be at most EMMAX_ALIGNMENT.");
@@ -384,7 +404,7 @@ EM_STATIC_ASSERT(EM_DEFAULT_ALIGNMENT <= EMMAX_ALIGNMENT, "EM_DEFAULT_ALIGNMENT 
 /*
  * Constant: Padding Mask
  * Mask used to ensure Zero in least significant bit of `free_blocks` pointer.
- * Nedded for `Magic LSB Padding Detector` trick to work properly.
+ * Needed for `Magic LSB Padding Detector` trick to work properly.
  * For more info, see comment in `em_create_static_aligned` function.
 */
 #define EMIS_PADDING         ((uintptr_t)1)
@@ -918,7 +938,7 @@ static inline void set_magic(Block *block, void *user_ptr) {
      *  enhancing the security and integrity of the memory management system.
     */
 
-    block->as.occupied.magic = (uintptr_t)0xDEADBEEF ^ (uintptr_t)user_ptr; // Set magic number using XOR with user pointer
+    block->as.occupied.magic = (uintptr_t)EM_MAGIC ^ (uintptr_t)user_ptr; // Set magic number using XOR with user pointer
 }
 
 /*
@@ -929,7 +949,7 @@ static inline bool is_valid_magic(const Block *block, const void *user_ptr) {
     EM_ASSERT((block != NULL)    && "Internal Error: 'is_valid_magic' called on NULL block");
     EM_ASSERT((user_ptr != NULL) && "Internal Error: 'is_valid_magic' called on NULL user_ptr");
 
-    return ((get_magic(block) ^ (uintptr_t)user_ptr) == (uintptr_t)0xDEADBEEF); // Validate magic number by XORing with user pointer
+    return ((get_magic(block) ^ (uintptr_t)user_ptr) == (uintptr_t)EM_MAGIC); // Validate magic number by XORing with user pointer
 }
 
 
@@ -2195,7 +2215,7 @@ EMDEF void em_free(void *data) {
 
     uintptr_t *spot_before_user_data = (uintptr_t *)((char *)data - sizeof(uintptr_t));
     uintptr_t check = *spot_before_user_data ^ (uintptr_t)data;
-    if (check == (uintptr_t)0xDEADBEEF) {
+    if (check == (uintptr_t)EM_MAGIC) {
         block = (Block *)(void *)((char *)data - sizeof(Block));
     }
     else {
@@ -2604,7 +2624,7 @@ EMDEF EM *em_create_nested_aligned(EM *EM_RESTRICT parent_em, size_t size, size_
 
     uintptr_t *spot_before_user_data = (uintptr_t *)((char *)data - sizeof(uintptr_t));
     uintptr_t check = *spot_before_user_data ^ (uintptr_t)data;
-    if (check == (uintptr_t)0xDEADBEEF) {
+    if (check == (uintptr_t)EM_MAGIC) {
         block = (Block *)(void *)((char *)data - sizeof(Block));
     }
     // LCOV_EXCL_START
@@ -2707,7 +2727,7 @@ EMDEF Bump *em_create_bump(EM *EM_RESTRICT parent_em, size_t size) {
 
     uintptr_t *spot_before_user_data = (uintptr_t *)((char *)data - sizeof(uintptr_t));
     uintptr_t check = *spot_before_user_data ^ (uintptr_t)data;
-    if (check == (uintptr_t)0xDEADBEEF) {
+    if (check == (uintptr_t)EM_MAGIC) {
         block = (Block *)(void *)((char *)data - sizeof(Block));
     }
     // LCOV_EXCL_START

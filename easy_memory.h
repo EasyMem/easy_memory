@@ -1378,7 +1378,7 @@ static inline size_t bump_get_capacity(const Bump *bump) {
 static inline void bump_set_capacity(Bump *bump, size_t size) {
     EM_ASSERT((bump != NULL)  && "Internal Error: 'bump_set_capacity' called on NULL bump");
 
-    return set_size(&(bump->as.block_representation), size);
+    set_size(&(bump->as.block_representation), size);
 }
 
 

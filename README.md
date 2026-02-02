@@ -159,13 +159,13 @@ Basic allocation, zero-initialization, and fast resetting.
 EM *em = em_create(1024 * 1024);
 
 // Standard allocation
-int *data = (int *)em_alloc(em, sizeof(int) * 100);
+MyObject *obj = (MyObject *)em_alloc(em, sizeof(MyObject))
 
 // Zero-initialized allocation (like calloc)
 Point *pts = (Point *)em_calloc(em, 10, sizeof(Point));
 
 // Free individual block
-em_free(data);
+em_free(obj);
 
 // Reset the entire context in O(1)
 // Marks all memory as free without releasing the underlying buffer
@@ -240,15 +240,16 @@ void main() {
 
 Customize the library's behavior by defining macros **before** including `easy_memory.h`.
 
-### Runtime Safety (`EM_SAFETY_LEVEL`)
+### Runtime Safety Policies (`EM_SAFETY_POLICY`)
 
-Controls the balance between performance and verification overhead.
+Controls the balance between absolute performance and runtime resilience.
 
-| Level | Mode | Description | Recommended For |
+| Policy | Mode | Description | Recommended For |
 | :---: | :--- | :--- | :--- |
-| **0** | **UNCHECKED** | Skips non-critical checks (magic numbers, ownership validation). Maximum speed. | Embedded / High-Performance Release |
-| **1** | **BASIC** | Standard safety. Checks for NULL pointers, alignment validity, and size limits. | Desktop / Standard Release |
-| **2** | **PARANOID** | **(Default)** Full validation. Verifies magic numbers (XOR protection), block ownership, and double-free detection. | Development / Debugging |
+| **0** | **CONTRACT** | **Design-by-Contract.** All checks are delegated to `EM_ASSERT`. Misuse leads to immediate abort (Debug) or UB (Release). | Performance-critical / Hardened Dev |
+| **1** | **DEFENSIVE** | **Fault-Tolerance (Default).** Performs robust 'if' checks. Gracefully returns `NULL` or exits on API misuse. | Production / General Purpose |
+
+> **Note:** The final behavior of **CONTRACT** mode is determined by your [Assertion Strategy](#assertion-strategy).
 
 ### Assertion Strategy
 
@@ -258,6 +259,7 @@ Determines how the library handles internal invariant violations.
 | :--- | :--- | :--- |
 | **(Default)** | No-op | Assertions are compiled out. Safe for release. |
 | `DEBUG` | Calls `assert()` | Standard C behavior. Aborts with file/line information. |
+| `ASSERT_STAYS` | Calls `assert()` | **Forces assertions to remain active** even in Release builds. |
 | `EM_ASSERT_PANIC` | Calls `abort()` | Hardened release. Prevents exploitability on heap corruption without leaking debug info. |
 | `EM_ASSERT_OPTIMIZE`| `__builtin_unreachable()` | **DANGER**. Uses assertions as compiler optimization hints. UB if condition is false. |
 | `EM_ASSERT(cond)` | **Custom** | Define this macro to implement custom error handling (e.g., logging, infinite loop, hardware reset). Overrides all other assertion flags. |
@@ -281,6 +283,7 @@ Helps detect use-after-free and uninitialized memory usage.
 | `EM_NO_MALLOC` | Disables `stdlib.h` dependency. Removes heap-based `em_create`, leaving only `em_create_static`. Essential for **Bare Metal**. |
 | `EM_STATIC` | Declares all functions as `static`, limiting visibility to the current translation unit. |
 | `EM_RESTRICT` | Manually define the `restrict` keyword if your compiler does not support auto-detection. |
+| `EM_NO_ATTRIBUTES` | Force-disables all compiler-specific attributes (`malloc`, `alloc_size`). **Note:** This is automatically enabled when both `EASY_MEMORY_IMPLEMENTATION` and `EM_STATIC` are defined to prevent pointer provenance issues during inlining. |
 
 ### Fine-Tuning
 

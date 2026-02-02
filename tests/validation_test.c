@@ -97,6 +97,9 @@ void test_invalid_em_creation(void) {
     #else
         printf("[INFO] Skipping SSIZE_MAX allocation test on 32-bit system.\n");
     #endif
+
+    EM *em_too_big = em_create(EMSIZE_MASK - 40);
+    ASSERT(em_too_big == NULL, "EM creation exceeding EMSIZE_MASK should fail");
     
     TEST_CASE("NULL memory for static EM");
     EM *null_memory_em = em_create_static(NULL, 1024);

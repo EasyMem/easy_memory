@@ -23,8 +23,9 @@
  *  Define these macros before including this header to customize behavior.
  *
  *  SAFETY & VERIFICATION:
- *    #define EM_SAFETY_LEVEL <N>  // 0: Unchecked (Fastest), 1: Basic, 2: Paranoid (Default)
+ *    #define EM_SAFETY_POLICY <N> // 0: CONTRACT (Design-by-Contract), 1: DEFENSIVE (Fault-Tolerant) [Default]
  *    #define DEBUG                // Enables assertions and auto-enables poisoning
+ *    #define ASSERT_STAYS         // Forces assertions to remain active even in Release builds
  *    #define EM_ASSERT_PANIC      // Assertions call abort() (Hardened Release)
  *    #define EM_ASSERT_OPTIMIZE   // Assertions are optimization hints (Danger!)
  *    #define EM_ASSERT(cond)      // Override with custom assertion logic
@@ -38,6 +39,8 @@
  *    #define EM_NO_MALLOC         // Disable stdlib dependencies (Bare Metal mode)
  *    #define EM_STATIC            // Make all functions static (Private linkage)
  *    #define EM_RESTRICT          // Override 'restrict' keyword definition
+ *    #define EM_RESTRICT          // Manual override for 'restrict' keyword definition
+ *    #define EM_NO_ATTRIBUTES     // Disable all compiler-specific attributes
  *
  *  TUNING:
  *    #define EM_MAGIC <value>         // Custom magic number for block validation
@@ -110,7 +113,7 @@ typedef struct Bump  Bump;
  * Configuration: Assertions
  * 
  * Behavior depends on defined macros:
- * 1. DEBUG or _DEBUG: 
+ * 1. DEBUG or ASSERT_STAYS: 
  *    Standard C assert(). Aborts and prints file/line on failure.
  * 
  * 2. EM_ASSERT_PANIC:
@@ -126,7 +129,7 @@ typedef struct Bump  Bump;
  *    No-op. Assertions are compiled out completely. Safe and fast.
 */
 #ifndef EM_ASSERT
-#   if defined(DEBUG)
+#   if defined(DEBUG) || defined(ASSERT_STAYS)
 #       include <assert.h>
 #       define EM_ASSERT(cond) assert(cond)
 #   elif defined(EM_ASSERT_PANIC)
@@ -176,30 +179,59 @@ typedef struct Bump  Bump;
 #endif
 
 /*
- * Configuration: Safety Level
- * Controls the balance between runtime safety checks and performance.
+ * Configuration: Safety Policies
+ * 
+ * Defines the methodology for handling invariant violations and API misuse. 
+ * This allows the developer to choose how the library responds to errors.
  *
- * Levels:
- * 0 - UNCHECKED (Maximum Performance):
- *     - Skips validation of magic numbers.
- *     - Skips bounds checks where possible.
- *     - Skips NULL pointer checks for 'em' instances (assumes valid inputs).
- *     - WARNING: Passing invalid data leads to Undefined Behavior immediately.
+ * EM_POLICY_CONTRACT (0):
+ *   - Philosophy: Post-conditions and invariants are treated as a contract.
+ *   - Behavior: Checks are delegated to the EM_ASSERT mechanism.
+ *   - Outcome: The final behavior (whether checks are compiled out, lead to a panic, 
+ *     or stay in release via ASSERT_STAYS) is determined entirely by the 
+ *     configured Assertion Strategy.
+ *   - Best for: Fine-grained control over debugging and performance.
  *
- * 1 - BASIC (Standard Safety):
- *     - Checks for NULL pointers (like standard malloc/free).
- *     - Checks for alignment validity.
- *     - Checks size limits.
- *     - Prevents obvious crashes but skips expensive validations.
+ * EM_POLICY_DEFENSIVE (1) [DEFAULT]:
+ *   - Philosophy: Runtime resilience and fault-tolerance.
+ *   - Behavior: Performs explicit 'if' checks in both Debug and Release.
+ *   - Outcome: Gracefully returns NULL or exits the function on violation.
+ *   - Best for: Production environments where the program must survive misuse 
+ *     without hard crashes.
+*/
+#define EM_POLICY_CONTRACT  0
+#define EM_POLICY_DEFENSIVE 1
+
+#ifndef EM_SAFETY_POLICY
+#   define EM_SAFETY_POLICY EM_POLICY_DEFENSIVE
+#endif
+
+/*
+ * Internal Safety Macros
  *
- * 2 - PARANOID (Maximum Safety) [DEFAULT]:
- *     - Validates Magic Numbers (XOR protection) in em_free.
- *     - Validates that blocks belong to the correct arena.
- *     - double-free detection.
- *     - Recommended for development and general usage.
- */
-#ifndef EM_SAFETY_LEVEL
-#   define EM_SAFETY_LEVEL 2
+ * EM_CHECK   - Used in functions returning values (e.g., pointers, size_t).
+ * EM_CHECK_V - Used in void functions (e.g., em_free, em_destroy).
+ *
+ * These macros adapt to the chosen EM_SAFETY_POLICY, providing either 
+ * a fail-fast assertion or a graceful runtime exit.
+*/
+#if EM_SAFETY_POLICY == EM_POLICY_CONTRACT
+#   define EM_CHECK(cond, ret, msg) EM_ASSERT((cond) && msg)
+#   define EM_CHECK_V(cond, msg)    EM_ASSERT((cond) && msg)
+#else
+#   define EM_CHECK(cond, ret, msg) do { if (!(cond)) return (ret); } while(0)
+#   define EM_CHECK_V(cond, msg)    do { if (!(cond)) return;       } while(0)
+#endif
+
+/*
+ * Configuration: Force Disable Attributes
+ * Disables all compiler-specific attributes, regardless of compiler support.
+ * 
+*/
+#ifndef EM_NO_ATTRIBUTES
+#   if defined(EASY_MEMORY_IMPLEMENTATION) && defined(EM_STATIC)
+#       define EM_NO_ATTRIBUTES
+#   endif
 #endif
 
 /*
@@ -207,44 +239,50 @@ typedef struct Bump  Bump;
  * Adds compiler-specific attributes to functions for optimization and correctness hints.
  * 
  * Behavior depends on defined macros:
- * 1. GCC or Clang:
+ * 1. EM_NO_ATTRIBUTES:
+ *    Disables all attributes, regardless of compiler support.
+ * 
+ * 2. GCC or Clang:
  *    Uses __attribute__ syntax. Takes index arguments, ignores name arguments.
  * 
- * 2. MSVC:
+ * 3. MSVC:
  *    Uses __declspec and SAL annotations. Takes name arguments, ignores index arguments.
  *    Requires <sal.h>.
  * 
- * 3. Other Compilers:
+ * 4. Other Compilers:
  *    Attributes are defined as empty.
  */
 #if defined(_MSC_VER)
 #   include <sal.h>
 #endif
 
-#ifndef EM_ATTR_MALLOC
-#   if defined(__GNUC__) || defined(__clang__)
-        // GCC / Clang
-        #define EM_ATTR_MALLOC __attribute__((malloc))
-        #define EM_ATTR_WARN_UNUSED __attribute__((warn_unused_result))
-        // GCC uses argument INDICES (1-based)
-        #define EM_ATTR_ALLOC_SIZE(idx, name) __attribute__((alloc_size(idx)))
-        #define EM_ATTR_ALLOC_SIZE2(idx1, idx2, name1, name2) __attribute__((alloc_size(idx1, idx2)))
-#   elif defined(_MSC_VER)
-        // MSVC (Windows)
-        #define EM_ATTR_MALLOC __declspec(restrict) _Ret_maybenull_
-        #define EM_ATTR_WARN_UNUSED _Check_return_
-        // MSVC uses argument NAMES.
-        // We use _Post_writable_byte_size_ to tell static analysis how much memory is valid.
-        #define EM_ATTR_ALLOC_SIZE(idx, name) _Post_writable_byte_size_(name)
-        // For calloc-like logic, we can multiply names directly in SAL
-        #define EM_ATTR_ALLOC_SIZE2(idx1, idx2, name1, name2) _Post_writable_byte_size_((name1) * (name2))
-#   else
-        // Unknown Compiler
-        #define EM_ATTR_MALLOC
-        #define EM_ATTR_WARN_UNUSED
-        #define EM_ATTR_ALLOC_SIZE(idx, name)
-        #define EM_ATTR_ALLOC_SIZE2(idx1, idx2, name1, name2)
-#   endif
+#if defined(EM_NO_ATTRIBUTES)
+#   define EM_ATTR_MALLOC
+#   define EM_ATTR_WARN_UNUSED
+#   define EM_ATTR_ALLOC_SIZE(idx, name)
+#   define EM_ATTR_ALLOC_SIZE2(idx1, idx2, name1, name2)
+#elif defined(__GNUC__) || defined(__clang__)
+    // GCC / Clang
+#   define EM_ATTR_MALLOC __attribute__((malloc))
+#   define EM_ATTR_WARN_UNUSED __attribute__((warn_unused_result))
+    // GCC uses argument INDICES (1-based)
+#   define EM_ATTR_ALLOC_SIZE(idx, name) __attribute__((alloc_size(idx)))
+#   define EM_ATTR_ALLOC_SIZE2(idx1, idx2, name1, name2) __attribute__((alloc_size(idx1, idx2)))
+#elif defined(_MSC_VER)
+    // MSVC (Windows)
+#   define EM_ATTR_MALLOC __declspec(restrict) _Ret_maybenull_
+#   define EM_ATTR_WARN_UNUSED _Check_return_
+    // MSVC uses argument NAMES.
+    // We use _Post_writable_byte_size_ to tell static analysis how much memory is valid.
+#   define EM_ATTR_ALLOC_SIZE(idx, name) _Post_writable_byte_size_(name)
+    // For calloc-like logic, we can multiply names directly in SAL
+#   define EM_ATTR_ALLOC_SIZE2(idx1, idx2, name1, name2) _Post_writable_byte_size_((name1) * (name2))
+#else
+    // Unknown Compiler
+#   define EM_ATTR_MALLOC
+#   define EM_ATTR_WARN_UNUSED
+#   define EM_ATTR_ALLOC_SIZE(idx, name)
+#   define EM_ATTR_ALLOC_SIZE2(idx1, idx2, name1, name2)
 #endif
 
 /*
@@ -488,7 +526,7 @@ EM_STATIC_ASSERT(offsetof(Bump, as.self.capacity) == offsetof(Block, size_and_al
     Bump_capacity_offset_mismatch);
 EM_STATIC_ASSERT(offsetof(Bump, as.self.prev) == offsetof(Block, prev), 
     Bump_prev_offset_mismatch);
-EM_STATIC_ASSERT(offsetof(Block, as.occupied.em) == offsetof(Bump, as.self.em), 
+EM_STATIC_ASSERT(offsetof(Bump, as.self.em) == offsetof(Block, as.occupied.em), 
     Bump_em_offset_mismatch);
 EM_STATIC_ASSERT((sizeof(Bump) == sizeof(Block)), Size_mismatch_between_Bump_and_Block);
 
@@ -514,7 +552,7 @@ EM_STATIC_ASSERT(offsetof(EM, as.self.prev) == offsetof(Block, prev),
     EM_prev_offset_mismatch);
 EM_STATIC_ASSERT(offsetof(EM, as.self.tail) == offsetof(Block, as.occupied.em), 
     EM_tail_offset_mismatch);
-EM_STATIC_ASSERT((sizeof(Bump) == sizeof(Block)), Size_mismatch_between_Bump_and_Block);
+EM_STATIC_ASSERT((sizeof(EM) == sizeof(Block)), Size_mismatch_between_Bump_and_Block);
 
 
 
@@ -2019,10 +2057,10 @@ static void em_free_block_full(EM *em, Block *block) {
 static void *alloc_in_free_blocks(EM *em, size_t size, size_t alignment) {
     EM_ASSERT((em != NULL)                         && "Internal Error: 'alloc_in_free_blocks' called on NULL easy memory");
     EM_ASSERT((size > 0)                           && "Internal Error: 'alloc_in_free_blocks' called on too small size");
-    EM_ASSERT((size <= EMSIZE_MASK)                  && "Internal Error: 'alloc_in_free_blocks' called on too big size");
+    EM_ASSERT((size <= EMSIZE_MASK)                && "Internal Error: 'alloc_in_free_blocks' called on too big size");
     EM_ASSERT(((alignment & (alignment - 1)) == 0) && "Internal Error: 'alloc_in_free_blocks' called on invalid alignment");
-    EM_ASSERT((alignment >= EMMIN_ALIGNMENT)         && "Internal Error: 'alloc_in_free_blocks' called on too small alignment");
-    EM_ASSERT((alignment <= EMMAX_ALIGNMENT)         && "Internal Error: 'alloc_in_free_blocks' called on too big alignment");
+    EM_ASSERT((alignment >= EMMIN_ALIGNMENT)       && "Internal Error: 'alloc_in_free_blocks' called on too small alignment");
+    EM_ASSERT((alignment <= EMMAX_ALIGNMENT)       && "Internal Error: 'alloc_in_free_blocks' called on too big alignment");
 
     Block *root = em_get_free_blocks(em);
     Block *block = find_and_detach_block(&root, size, alignment);
@@ -2059,10 +2097,10 @@ static void *alloc_in_free_blocks(EM *em, size_t size, size_t alignment) {
  * Returns pointer to allocated memory or NULL if allocation fails
  */
 static void *alloc_in_tail_full(EM *em, size_t size, size_t alignment) {
-    EM_ASSERT((em != NULL)                         && "Internal Error: 'alloc_in_tail_full' called on NULL easy memory");
-    EM_ASSERT((size > 0)                           && "Internal Error: 'alloc_in_tail_full' called on too small size");
+    EM_ASSERT((em != NULL)                           && "Internal Error: 'alloc_in_tail_full' called on NULL easy memory");
+    EM_ASSERT((size > 0)                             && "Internal Error: 'alloc_in_tail_full' called on too small size");
     EM_ASSERT((size <= EMSIZE_MASK)                  && "Internal Error: 'alloc_in_tail_full' called on too big size");
-    EM_ASSERT(((alignment & (alignment - 1)) == 0) && "Internal Error: 'alloc_in_tail_full' called on invalid alignment");
+    EM_ASSERT(((alignment & (alignment - 1)) == 0)   && "Internal Error: 'alloc_in_tail_full' called on invalid alignment");
     EM_ASSERT((alignment >= EMMIN_ALIGNMENT)         && "Internal Error: 'alloc_in_tail_full' called on too small alignment");
     EM_ASSERT((alignment <= EMMAX_ALIGNMENT)         && "Internal Error: 'alloc_in_tail_full' called on too big alignment");
     if (free_size_in_tail(em) < size) return NULL;  // Quick check to avoid unnecessary calculations
@@ -2092,7 +2130,7 @@ static void *alloc_in_tail_full(EM *em, size_t size, size_t alignment) {
     uintptr_t raw_data_ptr = (uintptr_t)block_data(tail);
     uintptr_t aligned_data_ptr = align_up(raw_data_ptr, alignment);
     size_t padding = aligned_data_ptr - raw_data_ptr;
-
+    
     size_t minimal_needed_block_size = padding + size;
 
     size_t free_space = free_size_in_tail(em);
@@ -2183,19 +2221,38 @@ EMDEF void em_free_scratch(EM *em) {
 }
 
 /*
- * Free a block of memory in the easy memory
- * Marks the block as free, merges it with adjacent free blocks if possible,
- * and updates the free block list
+ * Deallocate a memory block
+ *
+ * Returns a previously allocated block of memory to its parent Easy Memory instance.
+ * The function automatically identifies the block type (standard or scratch) and 
+ * performs coalescing (merging) with adjacent free blocks to mitigate fragmentation.
+ *
+ * Parameters:
+ *   - data: Pointer to the memory area to be freed. Must be a pointer previously 
+ *           returned by any em_alloc_* or em_calloc function.
+ * 
+ * Performance: 
+ *   - O(1) Constant Time if freeing the most recent allocation (the tail block).
+ *   - O(log n) if the block is in the middle of the heap (requires LLRB tree manipulation).
+ * 
+ * Safety & Behavior:
+ *   The function's response to invalid input is governed by the EM_SAFETY_POLICY:
+ *
+ *   - EM_POLICY_CONTRACT:
+ *       Passing a NULL pointer or a pointer not managed by this library is a 
+ *       violation of the API contract. This will trigger an EM_ASSERT. If assertions 
+ *       are disabled in release builds, this results in Undefined Behavior.
+ *   - EM_POLICY_DEFENSIVE:
+ *       The function performs robust runtime validation. If 'data' is NULL or 
+ *       if the block metadata is corrupted/invalid, the function will safely 
+ *       return without performing any operations, preventing a crash.
+ *
+ * Note: Once freed, the 'data' pointer becomes invalid and should not be accessed. 
+ * If EM_POISONING is enabled, the memory area will be filled with EM_POISON_BYTE.
  */
 EMDEF void em_free(void *data) {
-    #if EM_SAFETY_LEVEL >= 1
-        if (!data) return;
-        if ((uintptr_t)data % sizeof(uintptr_t) != 0) return;
-    #else
-        EM_ASSERT((data != NULL) && "Internal Error: 'em_free' called on NULL pointer");
-        EM_ASSERT(((uintptr_t)data % sizeof(uintptr_t) == 0) && "Internal Error: 'em_free' called on unaligned pointer");
-    #endif
-
+    EM_CHECK_V((data != NULL),                             "Internal Error: 'em_free' called on NULL pointer");
+    EM_CHECK_V(((uintptr_t)data % sizeof(uintptr_t) == 0), "Internal Error: 'em_free' called on unaligned pointer");
 
     Block *block = NULL;
 
@@ -2219,53 +2276,70 @@ EMDEF void em_free(void *data) {
         block = (Block *)(void *)((char *)data - sizeof(Block));
     }
     else {
-        if ((uintptr_t)check % sizeof(uintptr_t) != 0) return;
+        EM_CHECK_V(((uintptr_t)check % sizeof(uintptr_t) == 0), "Internal Error: 'em_free' detected corrupted block metadata");
         block = (Block *)check;
     }
 
-    #if EM_SAFETY_LEVEL >= 2
+    #if EM_SAFETY_POLICY == EM_POLICY_DEFENSIVE
         EM_ASSERT((block != NULL) && "Internal Error: 'em_free' detected NULL block");
         
-        // If block size is bigger than EMSIZE_MASK, it's invalid
-        if (get_size(block) > EMSIZE_MASK) return;
-        // If block is already free, it's invalid
-        // If magic is invalid, it's invalid
-        if (!is_valid_magic(block, data)) return;
-        
+        EM_CHECK_V((get_size(block) <= EMSIZE_MASK), "Internal Error: 'em_free' detected block with invalid size");
+        EM_CHECK_V((is_valid_magic(block, data)),    "Internal Error: 'em_free' detected block with invalid magic");
         EM *em = get_em(block);
         
         EM_ASSERT((em != NULL) && "Internal Error: 'em_free' detected block with NULL em");
-        
-        if (!is_block_within_em(em, block)) return;
+
+        EM_CHECK_V((is_block_within_em(em, block)), "Internal Error: 'em_free' detected block outside of its easy memory");
     #else
         EM *em = get_em(block); 
     #endif
         
-    #if EM_SAFETY_LEVEL >= 1
-        if (get_is_free(block)) return;
-    #endif
-        
+    EM_CHECK_V((!get_is_free(block)), "Internal Error: 'em_free' called on already freed block");    
 
     em_free_block_full(em, block);
 }
 
 /*
- * Allocate memory in the easy memory with custom alignment
- * Returns NULL if there is not enough space
+ * Allocate memory with custom alignment
+ *
+ * Attempts to find or create a contiguous block of memory within the arena that 
+ * satisfies both the requested size and alignment constraints.
+ *
+ * Performance:
+ *   - O(1) Fast-Path: Sequential allocations from the tail block.
+ *   - O(log n) Fallback: Best-fit search in the LLRB tree for fragmented memory.
+ *
+ * Alignment Requirements:
+ *   - Must be a power of two.
+ *   - Range: [4..512] bytes (32-bit systems) or [8..1024] bytes (64-bit systems).
+ *
+ * Capacity Limits:
+ *   - Minimum: 1 byte (internally padded to EM_MIN_BUFFER_SIZE, default 16).
+ *   - Physical Max: 512 MiB (32-bit) or 2 EiB (64-bit), limited by bit-packing.
+ *   - Usable Max: The current free space of the instance minus sizeof(Block) 
+ *     for metadata. In any case, it cannot exceed the Physical Max
+ *
+ * Parameters:
+ *   - em:        Pointer to the Easy Memory instance.
+ *   - size:      Number of bytes to allocate (must be > 0 and not exceed instance capacity).
+ *   - alignment: Boundary (power of two, within supported range).
+ *
+ * Returns:
+ *   A pointer to the aligned memory block, or NULL if the allocation fails.
+ *
+ * Safety & Behavior:
+ *   - EM_POLICY_CONTRACT: Triggers EM_ASSERT on NULL 'em', zero size, or 
+ *     invalid alignment.
+ *   - EM_POLICY_DEFENSIVE: Returns NULL on any invalid input or if an internal 
+ *     integer overflow is detected during padding calculation.
  */
 EMDEF void *em_alloc_aligned(EM *EM_RESTRICT em, size_t size, size_t alignment) {
-    #if EM_SAFETY_LEVEL >= 1
-        if (!em || size == 0 || size > em_get_capacity(em)) return NULL;
-        if ((alignment & (alignment - 1)) != 0) return NULL;
-        if (alignment < EMMIN_ALIGNMENT || alignment > EMMAX_ALIGNMENT) return NULL;
-    #else
-        EM_ASSERT((em != NULL)                           && "Internal Error: 'em_alloc_aligned' called on NULL easy memory");
-        EM_ASSERT((size > 0)                             && "Internal Error: 'em_alloc_aligned' called on too small size");
-        EM_ASSERT((size <= em_get_capacity(em))          && "Internal Error: 'em_alloc_aligned' called on too big size");
-        EM_ASSERT(((alignment & (alignment - 1)) == 0)   && "Internal Error: 'em_alloc_aligned' called on invalid alignment");
-        EM_ASSERT((alignment >= EMMIN_ALIGNMENT)         && "Internal Error: 'em_alloc_aligned' called on too small alignment");
-        EM_ASSERT((alignment <= EMMAX_ALIGNMENT)         && "Internal Error: 'em_alloc_aligned' called on too big alignment");
-    #endif
+    EM_CHECK((em != NULL),                         NULL, "Internal Error: 'em_alloc_aligned' called on NULL easy memory");
+    EM_CHECK((size > 0),                           NULL, "Internal Error: 'em_alloc_aligned' called on too small size");
+    EM_CHECK((size <= em_get_capacity(em)),        NULL, "Internal Error: 'em_alloc_aligned' called on too big size");
+    EM_CHECK(((alignment & (alignment - 1)) == 0), NULL, "Internal Error: 'em_alloc_aligned' called on invalid alignment");
+    EM_CHECK((alignment >= EMMIN_ALIGNMENT),       NULL, "Internal Error: 'em_alloc_aligned' called on too small alignment");
+    EM_CHECK((alignment <= EMMAX_ALIGNMENT),       NULL, "Internal Error: 'em_alloc_aligned' called on too big alignment");
 
     // Trying to allocate in free blocks first
     void *result = alloc_in_free_blocks(em, size, alignment);
@@ -2276,39 +2350,116 @@ EMDEF void *em_alloc_aligned(EM *EM_RESTRICT em, size_t size, size_t alignment) 
 }
 
 /*
- * Allocate memory in the easy memory with default alignment
- * Returns NULL if there is not enough space
+ * Allocate memory with default alignment
+ *
+ * A convenience wrapper for em_alloc_aligned that uses the arena's baseline 
+ * alignment (configured during instance creation).
+ *
+ * Performance:
+ *   - O(1) Constant Time (Fast-Path): Sequential allocations from the tail block.
+ *   - O(log n) Fallback: Best-fit search in the LLRB tree for fragmented memory.
+ *
+ * Alignment Requirements:
+ *   - Uses the default alignment of the EM instance.
+ *
+ * Capacity Limits:
+ *   - Minimum: 1 byte (internally padded to EM_MIN_BUFFER_SIZE, default 16).
+ *   - Physical Max: 512 MiB (32-bit) or 2 EiB (64-bit), limited by bit-packing.
+ *   - Usable Max: The current free space of the instance minus sizeof(Block) 
+ *     for metadata. In any case, it cannot exceed the Physical Max
+ *
+ * Parameters:
+ *   - em:   Pointer to the Easy Memory instance.
+ *   - size: Bytes to allocate (must not exceed instance capacity).
+ *
+ * Returns:
+ *   - Pointer to the aligned memory, or NULL on failure.
+ *
+ * Safety & Behavior:
+ *   - EM_POLICY_CONTRACT: 
+ *       Triggers EM_ASSERT if 'em' is NULL or 'size' is 0 or out of range.
+ *   - EM_POLICY_DEFENSIVE: 
+ *       Returns NULL if 'em' is NULL, 'size' is 0, or if the arena is exhausted.
  */
 EMDEF void *em_alloc(EM *EM_RESTRICT em, size_t size) {
-    #if EM_SAFETY_LEVEL >= 1
-        if (!em) return NULL;
-    #else
-        EM_ASSERT((em != NULL) && "Internal Error: 'em_alloc' called on NULL easy memory");
-    #endif
+    EM_CHECK((em != NULL), NULL, "Internal Error: 'em_alloc' called on NULL easy memory");
 
     return em_alloc_aligned(em, size, em_get_alignment(em));
 }
 
 /*
- * Allocate scratch memory in the physical end of easy memory with custom alignment
- * Returns NULL if there is not enough space or scratch memory is already allocated
+ * Allocate scratch memory at the physical end of the instance [IN PROGRESS]
+ *
+ * This function provides a specialized mechanism to dynamically "bite off" memory 
+ * from the very end (highest addresses) of the memory pool.
+ *
+ * Performance: 
+ *   O(1) Constant Time. Since it simply calculates the address relative to the 
+ *   total capacity and avoids tree searching, it is the fastest allocation method.
+ *
+ * Alignment Requirements:
+ *   - Must be a power of two.
+ *   - Range: [4..512] bytes (32-bit systems) or [8..1024] bytes (64-bit systems).
+ *
+ * Capacity Limits:
+ *   - Minimum: 1 byte (internally padded to EM_MIN_BUFFER_SIZE, default 16).
+ *   - Physical Max: 512 MiB (32-bit) or 2 EiB (64-bit), limited by bit-packing.
+ *   - Usable Max: The current free space of the instance minus sizeof(Block) 
+ *     for metadata. In any case, it cannot exceed the Physical Max
+ * 
+ * Rationale:
+ *   Scratch allocation is designed to solve the "Short-lived vs. Long-lived" object 
+ *   problem. By dynamically taking memory from the opposite end of the pool, 
+ *   temporary buffers (e.g., workspaces, loaders) do not interfere with the 
+ *   main heap topology, preserving large contiguous chunks for long-lived data.
+ *
+ * Mechanism:
+ *   There is no pre-reserved "scratch slot". The function calculates a position 
+ *   at the extreme tail of the instance's total capacity, effectively shrinking 
+ *   the available space for standard allocations from the top down.
+ * 
+ * Deallocation (Crucial):
+ *   It is STRONGLY RECOMMENDED to use the standard 'em_free()' function to 
+ *   release this memory. The library is designed to automatically detect 
+ *   scratch blocks and correctly update the instance state upon deallocation.
+ *
+ * Constraints:
+ *   - Only ONE active scratchpad allocation is allowed at a time per any 
+ *     Easy Memory instance.
+ *   - The scratchpad must be released (em_free) to reclaim the memory 
+ *     and allow a new scratch allocation.
+ *
+ * Parameters:
+ *   - em:        Pointer to the Easy Memory instance.
+ *   - size:      Size of the scratch buffer.
+ *   - alignment: Alignment boundary (power of two).
+ *
+ * Returns:
+ *   A pointer to the scratch buffer at the end of the pool, or NULL on failure.
+ *
+ * Safety & Behavior:
+ *   - EM_POLICY_CONTRACT:
+ *       Breaching the following triggers EM_ASSERT:
+ *       - 'em' is NULL or a scratchpad is already active.
+ *       - 'size' is 0 or too large.
+ *       - 'alignment' is invalid.
+ *
+ *   - EM_POLICY_DEFENSIVE:
+ *       Returns NULL if:
+ *       - A scratchpad is already in use.
+ *       - There is not enough free space between the standard tail and the 
+ *         end of the pool to fit the requested size and metadata.
+ *       - Any parameter is invalid.
  */
 EMDEF void *em_alloc_scratch_aligned(EM *EM_RESTRICT em, size_t size, size_t alignment) {
-    #if EM_SAFETY_LEVEL >= 1
-        if (!em || size == 0 || em_get_has_scratch(em) || size > em_get_capacity(em)) return NULL;
-        if ((alignment & (alignment - 1)) != 0) return NULL;
-        if (alignment < EMMIN_ALIGNMENT || alignment > EMMAX_ALIGNMENT) return NULL;
-        if (size > free_size_in_tail(em)) return NULL;
-    #else
-        EM_ASSERT((em != NULL)                           && "Internal Error: 'em_alloc_scratch_aligned' called on NULL easy memory");
-        EM_ASSERT((size > 0)                             && "Internal Error: 'em_alloc_scratch_aligned' called on too small size");
-        EM_ASSERT((!em_get_has_scratch(em))              && "Internal Error: 'em_alloc_scratch_aligned' called when scratch already allocated");
-        EM_ASSERT((size <= em_get_capacity(em))          && "Internal Error: 'em_alloc_scratch_aligned' called on too big size");
-        EM_ASSERT(((alignment & (alignment - 1)) == 0)   && "Internal Error: 'em_alloc_scratch_aligned' called on invalid alignment");
-        EM_ASSERT((alignment >= EMMIN_ALIGNMENT)         && "Internal Error: 'em_alloc_scratch_aligned' called on too small alignment");
-        EM_ASSERT((alignment <= EMMAX_ALIGNMENT)         && "Internal Error: 'em_alloc_scratch_aligned' called on too big alignment");
-        EM_ASSERT((size <= free_size_in_tail(em))        && "Internal Error: 'em_alloc_scratch_aligned' called on too big size for scratch");
-    #endif
+    EM_CHECK((em != NULL)                        , NULL,"Internal Error: 'em_alloc_scratch_aligned' called on NULL easy memory");
+    EM_CHECK((size > 0)                          , NULL,"Internal Error: 'em_alloc_scratch_aligned' called on too small size");
+    EM_CHECK((!em_get_has_scratch(em))           , NULL,"Internal Error: 'em_alloc_scratch_aligned' called when scratch already allocated");
+    EM_CHECK((size <= em_get_capacity(em))       , NULL,"Internal Error: 'em_alloc_scratch_aligned' called on too big size");
+    EM_CHECK(((alignment & (alignment - 1)) == 0), NULL,"Internal Error: 'em_alloc_scratch_aligned' called on invalid alignment");
+    EM_CHECK((alignment >= EMMIN_ALIGNMENT)      , NULL,"Internal Error: 'em_alloc_scratch_aligned' called on too small alignment");
+    EM_CHECK((alignment <= EMMAX_ALIGNMENT)      , NULL,"Internal Error: 'em_alloc_scratch_aligned' called on too big alignment");
+    EM_CHECK((size <= free_size_in_tail(em))     , NULL,"Internal Error: 'em_alloc_scratch_aligned' called on too big size for scratch");
 
     uintptr_t raw_end_of_em = (uintptr_t)em + em_get_capacity(em);
     uintptr_t end_of_em = raw_end_of_em;
@@ -2346,37 +2497,91 @@ EMDEF void *em_alloc_scratch_aligned(EM *EM_RESTRICT em, size_t size, size_t ali
 }
 
 /*
- * Allocate scratch memory in the physical end of easy memory with default alignment
- * Returns NULL if there is not enough space or scratch memory is already allocated
+ * Allocate scratch memory with default alignment [IN PROGRESS]
+ *
+ * A convenience wrapper for em_alloc_scratch_aligned that uses the arena's 
+ * baseline alignment (configured during instance creation). 
+ *
+ * Performance:
+ *   - O(1) Constant Time. This is the fastest allocation method as it 
+ *     dynamically "bites off" memory from the extreme physical end of the pool.
+ *
+ * Alignment Requirements:
+ *   - Uses the default alignment of the EM instance.
+ *   - Range: [4..512] bytes (32-bit systems) or [8..1024] bytes (64-bit systems).
+ *
+ * Capacity Limits:
+ *   - Minimum: 1 byte (internally padded to machine-word boundary).
+ *   - Physical Max: 512 MiB (32-bit) or 2 EiB (64-bit), limited by bit-packing.
+ *   - Usable Max: The free space at the tail end of the arena minus sizeof(Block) 
+ *     for metadata and an additional machine-word for internal size tracking.
+ *
+ * Constraints:
+ *   - Only ONE active scratchpad allocation per any Easy Memory instance.
+ *   - You must free (em_free) the current scratchpad before allocating a new one.
+ *
+ * Parameters:
+ *   - em:   Pointer to the Easy Memory instance.
+ *   - size: Bytes to allocate.
+ *
+ * Returns:
+ *   - Pointer to the scratch buffer at the end of the pool, or NULL on failure.
+ *
+ * Safety & Behavior:
+ *   - EM_POLICY_CONTRACT: 
+ *       Triggers EM_ASSERT if 'em' is NULL, a scratch is already active, 
+ *       или 'size' некорректен.
+ *   - EM_POLICY_DEFENSIVE: 
+ *       Returns NULL if 'em' is NULL, scratch is already active, or 
+ *       the tail area cannot fit the request + overhead.
  */
 EMDEF void *em_alloc_scratch(EM *EM_RESTRICT em, size_t size) {
-    #if EM_SAFETY_LEVEL >= 1
-        if (!em) return NULL;
-    #else
-        EM_ASSERT((em != NULL) && "Internal Error: 'em_alloc_scratch' called on NULL easy memory");
-    #endif  
+    EM_CHECK((em != NULL), NULL, "Internal Error: 'em_alloc_scratch' called on NULL easy memory"); 
 
     return em_alloc_scratch_aligned(em, size, em_get_alignment(em));
 }
 
 /*
- * Allocate zero-initialized memory in the easy memory
- * Returns NULL if there is not enough space or overflow is detected
+ * Allocate zero-initialized memory for an array
+ *
+ * Allocates a block of memory for an array of 'nmemb' elements of 'size' bytes 
+ * each and initializes all bytes in the allocated storage to zero.
+ *
+ * Performance:
+ *   Equivalent to em_alloc() plus a memset() operation.
+ * 
+ * Alignment Requirements:
+ *   - Uses the default alignment of the EM instance.
+ *   - Range: [4..512] bytes (32-bit systems) or [8..1024] bytes (64-bit systems).
+ *
+ * Capacity Limits:
+ *   - Minimum: 1 byte (internally padded to EM_MIN_BUFFER_SIZE, default 16).
+ *   - Maximum: 512 MiB (32-bit) or 2 EiB (64-bit).
+ *   - Note: The function performs a safe overflow check (nmemb * size) before allocation.
+ *
+ * Parameters:
+ *   - em:    Pointer to the Easy Memory instance.
+ *   - nmemb: Number of elements in the array.
+ *   - size:  Size of each element in bytes.
+ *
+ * Returns:
+ *   A pointer to the zero-initialized memory, or NULL if the allocation fails 
+ *   or if the multiplication (nmemb * size) results in an integer overflow.
+ *
+ * Safety & Behavior:
+ *   - EM_POLICY_CONTRACT:
+ *       Triggers EM_ASSERT if 'em' is NULL, if parameters are zero, or if 
+ *       an integer overflow is detected.
+ *
+ *   - EM_POLICY_DEFENSIVE:
+ *       Safely returns NULL on invalid parameters or detected integer overflow.
+ *       The multiplication check is performed BEFORE any allocation attempt.
  */
 EMDEF void *em_calloc(EM *EM_RESTRICT em, size_t nmemb, size_t size) {
-    #if EM_SAFETY_LEVEL >= 1
-        if (!em) return NULL;
-
-        if (nmemb > 0 && (SIZE_MAX / nmemb) < size) {
-            return NULL; // Overflow detected
-        }
-    #else
-        EM_ASSERT((em != NULL) && "Internal Error: 'em_calloc' called on NULL easy memory");
-        if (nmemb > 0 && (SIZE_MAX / nmemb) < size) {
-            EM_ASSERT(false && "Internal Error: 'em_calloc' detected size overflow");
-            return NULL; // Overflow detected
-        }
-    #endif
+    EM_CHECK((em != NULL),                 NULL, "Internal Error: 'em_calloc' called on NULL easy memory");
+    EM_CHECK((nmemb > 0),                  NULL, "Internal Error: 'em_calloc' called on zero nmemb");
+    EM_CHECK((size > 0),                   NULL, "Internal Error: 'em_calloc' called on zero size");
+    EM_CHECK(((SIZE_MAX / nmemb) >= size), NULL, "Internal Error: 'em_calloc' detected size overflow");
 
     size_t total_size = nmemb * size;
     void *ptr = em_alloc(em, total_size);
@@ -2387,23 +2592,54 @@ EMDEF void *em_calloc(EM *EM_RESTRICT em, size_t nmemb, size_t size) {
 }
 
 /*
- * Create a static easy memory
- * Initializes an easy memory using preallocated memory and sets up the first block
- * Returns NULL if the provided size is too small, memory is NULL or size is negative
+ * Initialize an Easy Memory instance over a static buffer
+ *
+ * Transforms a raw pre-allocated block of memory into a fully functional arena.
+ * This is the primary initialization function for bare-metal, stack-allocated, 
+ * or shared memory environments.
+ *
+ * Flexible Input Handling:
+ *   The function is designed to handle "crooked" or unaligned input pointers. 
+ *   It will automatically shift its internal starting position to the nearest 
+ *   required machine-word boundary. 
+ *   Note: This internal alignment shift slightly reduces the usable capacity 
+ *   from the provided total 'size'.
+ *
+ * Alignment Requirements:
+ *   - Must be a power of two.
+ *   - Range: [4..512] bytes (32-bit systems) or [8..1024] bytes (64-bit systems).
+ *
+ * Capacity Limits:
+ *   - Minimum: ~48 bytes (32-bit) or ~80 bytes (64-bit). 
+ *     Calculated as: sizeof(EM) + sizeof(Block) + EM_MIN_BUFFER_SIZE.
+ *   - Physical Max: 512 MiB (32-bit) or 2 EiB (64-bit), limited by bit-packing.
+ *   - Usable Max: Total 'size' minus internal alignment padding, sizeof(EM) 
+ *     header, and the first block's metadata (sizeof(Block)).
+ *
+ * Parameters:
+ *   - memory:    Pointer to the start of the buffer (alignment is handled internally).
+ *   - size:      Total size of the buffer in bytes.
+ *   - alignment: Baseline alignment for all future allocations in this instance.
+ *
+ * Returns:
+ *   A pointer to the initialized EM header within the provided buffer, 
+ *   or NULL if the usable area (after self-alignment) is below the minimum threshold.
+ *
+ * Safety & Behavior:
+ *   - EM_POLICY_CONTRACT:
+ *       Triggers EM_ASSERT on NULL memory or if size is outside [Min..Max] range.
+ *
+ *   - EM_POLICY_DEFENSIVE:
+ *       Gracefully returns NULL if input parameters are invalid or if the 
+ *       buffer cannot satisfy the initialization overhead.
  */
 EMDEF EM *em_create_static_aligned(void *EM_RESTRICT memory, size_t size, size_t alignment) {
-    #if EM_SAFETY_LEVEL >= 1
-        if (!memory || size < EMMIN_SIZE || size > EMSIZE_MASK) return NULL;
-        if ((alignment & (alignment - 1)) != 0) return NULL;
-        if (alignment < EMMIN_ALIGNMENT || alignment > EMMAX_ALIGNMENT) return NULL;
-    #else
-        EM_ASSERT((memory != NULL)                       && "Internal Error: 'em_create_static_aligned' called with NULL memory");
-        EM_ASSERT((size >= EMMIN_SIZE)                   && "Internal Error: 'em_create_static_aligned' called with too small size");
-        EM_ASSERT((size <= EMSIZE_MASK)                  && "Internal Error: 'em_create_static_aligned' called with too big size");
-        EM_ASSERT(((alignment & (alignment - 1)) == 0)   && "Internal Error: 'em_create_static_aligned' called with invalid alignment");
-        EM_ASSERT((alignment >= EMMIN_ALIGNMENT)         && "Internal Error: 'em_create_static_aligned' called with too small alignment");
-        EM_ASSERT((alignment <= EMMAX_ALIGNMENT)         && "Internal Error: 'em_create_static_aligned' called with too big alignment");
-    #endif
+    EM_CHECK((memory != NULL)                    , NULL, "Internal Error: 'em_create_static_aligned' called with NULL memory");
+    EM_CHECK((size >= EMMIN_SIZE)                , NULL, "Internal Error: 'em_create_static_aligned' called with too small size");
+    EM_CHECK((size <= EMSIZE_MASK)               , NULL, "Internal Error: 'em_create_static_aligned' called with too big size");
+    EM_CHECK(((alignment & (alignment - 1)) == 0), NULL, "Internal Error: 'em_create_static_aligned' called with invalid alignment");
+    EM_CHECK((alignment >= EMMIN_ALIGNMENT)      , NULL, "Internal Error: 'em_create_static_aligned' called with too small alignment");
+    EM_CHECK((alignment <= EMMAX_ALIGNMENT)      , NULL, "Internal Error: 'em_create_static_aligned' called with too big alignment");
 
     uintptr_t raw_addr = (uintptr_t)memory;
     uintptr_t aligned_addr = align_up(raw_addr, EMMIN_ALIGNMENT);
@@ -2471,40 +2707,86 @@ EMDEF EM *em_create_static_aligned(void *EM_RESTRICT memory, size_t size, size_t
 }
 
 /*
- * Create a static easy memory with default alignment
- * Initializes an easy memory using preallocated memory with default alignment
- * Returns NULL if the provided size is too small, memory is NULL or size is negative
+ * Create a static Easy Memory instance with default alignment over a static buffer
+ *
+ * A convenience wrapper for em_create_static_aligned using the arena's 
+ * baseline alignment (default 16 bytes).
+ *
+ * Performance:
+ *   - O(1) Constant Time.
+ *
+ * Alignment Requirements:
+ *   - Fixed at 16 bytes (unless EM_DEFAULT_ALIGNMENT is overridden).
+ *   - Range: [4..512] bytes (32-bit systems) or [8..1024] bytes (64-bit systems).
+ *
+ * Capacity Limits:
+ *   - Minimum: ~48 bytes (32-bit) or ~80 bytes (64-bit).
+ *   - Physical Max: 512 MiB (32-bit) or 2 EiB (64-bit), limited by bit-packing.
+ *   - Usable Max: Total 'size' minus internal alignment padding, sizeof(EM), 
+ *     and sizeof(Block).
+ *
+ * Parameters:
+ *   - memory: Raw pointer to the buffer (internal alignment shift is applied).
+ *   - size:   Total size of the provided buffer in bytes.
+ *
+ * Returns:
+ *   - Pointer to the initialized EM instance, or NULL on failure.
+ *
+ * Safety & Behavior:
+ *   - Subject to the same Safety Policies and limits as em_create_static_aligned.
  */
 EMDEF EM *em_create_static(void *EM_RESTRICT memory, size_t size) {
-    #if EM_SAFETY_LEVEL >= 1
-        if (!memory) return NULL;
-    #else
-        EM_ASSERT((memory != NULL) && "Internal Error: 'em_create_static' called with NULL memory");
-    #endif
+    EM_CHECK((memory != NULL), NULL, "Internal Error: 'em_create_static' called with NULL memory");
 
     return em_create_static_aligned(memory, size, EM_DEFAULT_ALIGNMENT);
 }
 
 #ifndef EM_NO_MALLOC
 /*
- * Create a easy memory with custom alignment in heap
- * Allocates memory for the easy memory and initializes it with the specified size and alignment
- * Returns NULL if the provided size is too small, memory allocation fails or size is negative
+ * Create a dynamic Easy Memory instance on the heap
+ *
+ * Allocates a contiguous block from the system heap (via malloc) and 
+ * initializes it as a dynamic Easy Memory arena.
+ *
+ * Performance:
+ *   - O(1) + system malloc() overhead.
+ *
+ * Alignment Requirements:
+ *   - Must be a power of two.
+ *   - Range: [4..512] bytes (32-bit systems) or [8..1024] bytes (64-bit systems).
+ *
+ * Capacity Limits:
+ *   - Minimum Usable: 16 bytes (EM_MIN_BUFFER_SIZE).
+ *   - Physical Max: 512 MiB (32-bit) or 2 EiB (64-bit), limited by bit-packing.
+ *   - Usable Max: Equal to the requested 'size'. 
+ *     Note: The actual system memory consumption will be higher due to the 
+ *     EM header (sizeof(EM)) and alignment overhead.
+ *
+ * Parameters:
+ *   - size:      The requested usable capacity of the arena.
+ *   - alignment: Baseline alignment for all future allocations (power of two).
+ *
+ * Returns:
+ *   - Pointer to the new EM instance, or NULL if system malloc fails or 
+ *     if (size + overhead) causes an integer overflow.
+ *
+ * Safety & Behavior:
+ *   - EM_POLICY_CONTRACT: 
+ *       Triggers EM_ASSERT if size is out of range or overhead calculation overflows.
+ *   - EM_POLICY_DEFENSIVE: 
+ *       Performs an unconditional overflow check and returns NULL if the 
+ *       request is mathematically impossible to satisfy.
  */
 EMDEF EM *em_create_aligned(size_t size, size_t alignment) {
-    #if EM_SAFETY_LEVEL >= 1
-        if (size < EMBLOCK_MIN_SIZE || size > EMSIZE_MASK) return NULL;
-        if ((alignment & (alignment - 1)) != 0) return NULL;
-        if (alignment < EMMIN_ALIGNMENT|| alignment > EMMAX_ALIGNMENT) return NULL;
-    #else
-        EM_ASSERT((size >= EMBLOCK_MIN_SIZE)             && "Internal Error: 'em_create_aligned' called with too small size");
-        EM_ASSERT((size <= EMSIZE_MASK)                  && "Internal Error: 'em_create_aligned' called with too big size");
-        EM_ASSERT(((alignment & (alignment - 1)) == 0)   && "Internal Error: 'em_create_aligned' called with invalid alignment");
-        EM_ASSERT((alignment >= EMMIN_ALIGNMENT)         && "Internal Error: 'em_create_aligned' called with too small alignment");
-        EM_ASSERT((alignment <= EMMAX_ALIGNMENT)         && "Internal Error: 'em_create_aligned' called with too big alignment");
-    #endif
+    size_t overhead = sizeof(EM) + alignment;
+    EM_CHECK((size <= SIZE_MAX - overhead)       , NULL, "Internal Error: 'em_create_aligned' size overflow");
+    EM_CHECK((size >= EMBLOCK_MIN_SIZE)          , NULL, "Internal Error: 'em_create_aligned' called with too small size");
+    EM_CHECK((size <= EMSIZE_MASK)               , NULL, "Internal Error: 'em_create_aligned' called with too big size");
+    EM_CHECK(((alignment & (alignment - 1)) == 0), NULL, "Internal Error: 'em_create_aligned' called with invalid alignment");
+    EM_CHECK((alignment >= EMMIN_ALIGNMENT)      , NULL, "Internal Error: 'em_create_aligned' called with too small alignment");
+    EM_CHECK((alignment <= EMMAX_ALIGNMENT)      , NULL, "Internal Error: 'em_create_aligned' called with too big alignment");
 
-    void *data = malloc(size + sizeof(EM) + alignment);
+    void *data = malloc(size + overhead);
     if (!data) return NULL;
     
     EM *em = em_create_static_aligned(data, size + sizeof(EM), alignment);
@@ -2522,9 +2804,29 @@ EMDEF EM *em_create_aligned(size_t size, size_t alignment) {
 }
 
 /*
- * Create a easy memory with default alignment in heap
- * Allocates memory for the easy memory and initializes it with the specified size and default alignment
- * Returns NULL if the provided size is too small, memory allocation fails or size is negative
+ * Create a dynamic Easy Memory instance with default alignment
+ *
+ * A convenience wrapper for em_create_aligned using the baseline 
+ * default alignment (16 bytes).
+ *
+ * Performance:
+ *   - O(1) + system malloc() overhead.
+ *
+ * Alignment Requirements:
+ *   - Fixed at 16 bytes (unless EM_DEFAULT_ALIGNMENT is overridden).
+ *
+ * Capacity Limits:
+ *   - Minimum Usable: 16 bytes.
+ *   - Physical Max: 512 MiB (32-bit) or 2 EiB (64-bit).
+ *
+ * Parameters:
+ *   - size: The requested usable capacity of the arena.
+ *
+ * Returns:
+ *   - Pointer to the new EM instance, or NULL on failure.
+ *
+ * Safety & Behavior:
+ *   - Subject to the same Safety Policies and overflow checks as em_create_aligned.
  */
 EMDEF EM *em_create(size_t size) {
     return em_create_aligned(size, EM_DEFAULT_ALIGNMENT);
@@ -2532,16 +2834,40 @@ EMDEF EM *em_create(size_t size) {
 #endif // EM_NO_MALLOC
 
 /*
- * Destroy the easy memory
- * Deallocates the memory used by the easy memory if it was allocated in heap
- * Can be safely called with static easy memories (no operation in that case)
+ * Destroy an Easy Memory instance
+ *
+ * Reclaims all resources associated with the arena and terminates its lifecycle.
+ *
+ * Performance:
+ *   - Static/Dynamic: O(1) constant time.
+ *   - Nested: O(N), where N is the number of physically adjacent free blocks 
+ *     and nested arenas located immediately BEFORE the target instance. 
+ *     Rationale: The library performs a "Walkback" search to find the parent 
+ *     header without storing explicit parent pointers in every block.
+ *     Note: Typically N is very small (1 to 3), ensuring near-instant operation.
+ *
+ * Mechanism (Context-Aware):
+ *   1. Nested Instance: Identifies the parent arena by traversing preceding 
+ *      physical neighbors, then returns its entire block to that parent.
+ *   2. Dynamic Instance: Releases the heap buffer via the system free() call.
+ *   3. Static Instance: No-op. The EM metadata is discarded, but the buffer 
+ *      remains intact for raw memory access.
+ *
+ * Lifecycle & Stability:
+ *   - After destruction, the 'em' pointer and ALL pointers allocated from 
+ *     it become invalid (Use-After-Free risk).
+ *   - Destroying a parent instance effectively invalidates all its nested 
+ *     children, as their underlying storage is reclaimed.
+ *
+ * Parameters:
+ *   - em: Pointer to the Easy Memory instance to be destroyed.
+ *
+ * Safety & Behavior:
+ *   - EM_POLICY_CONTRACT: Triggers EM_ASSERT if 'em' is NULL.
+ *   - EM_POLICY_DEFENSIVE: Safely returns without action if 'em' is NULL.
  */
 EMDEF void em_destroy(EM *em) {
-    #if EM_SAFETY_LEVEL >= 1
-        if (!em) return;
-    #else
-        EM_ASSERT((em != NULL) && "Internal Error: 'em_destroy' called on NULL easy memory");
-    #endif
+    EM_CHECK_V((em != NULL), "Internal Error: 'em_destroy' called on NULL easy memory");
 
     if (em_get_is_nested(em)) {
         EM *parent = get_parent_em((Block *)em);
@@ -2557,15 +2883,30 @@ EMDEF void em_destroy(EM *em) {
 }
 
 /*
- * Reset the easy memory
- * Clears the easy memory's blocks and resets it to the initial state without freeing memory
+ * Reset the Easy Memory instance
+ *
+ * Wipes all internal metadata and returns the arena to its initial state 
+ * without releasing the underlying memory.
+ *
+ * Performance: 
+ *   - O(1) Constant Time. Only internal flags and the tail pointer are reset.
+ *
+ * Capacity & Alignment:
+ *   - Baseline alignment and total capacity remain unchanged.
+ *
+ * Parameters:
+ *   - em: Pointer to the Easy Memory instance to be reset.
+ *
+ * Safety & Behavior:
+ *   - EM_POLICY_CONTRACT: Triggers EM_ASSERT if 'em' is NULL.
+ *   - EM_POLICY_DEFENSIVE: Safely returns if 'em' is NULL.
+ *
+ * Note: After a reset, ALL previously allocated pointers from this 
+ * instance become invalid, though the memory is not physically cleared 
+ * (unless using em_reset_zero).
  */
 EMDEF void em_reset(EM *EM_RESTRICT em) {
-    #if EM_SAFETY_LEVEL >= 1
-        if (!em) return;
-    #else
-        EM_ASSERT((em != NULL) && "Internal Error: 'em_reset' called on NULL easy memory");
-    #endif
+    EM_CHECK_V((em != NULL), "Internal Error: 'em_reset' called on NULL easy memory");
 
     Block *first_block = em_get_first_block(em);
 
@@ -2584,38 +2925,78 @@ EMDEF void em_reset(EM *EM_RESTRICT em) {
 }
 
 /*
- * Reset the easy memory and set its tail to zero
- * clears the easy memory's blocks and resets it to the initial state with zeroing all the memory
+ * Reset the instance and zero-initialize memory
+ *
+ * Performs an O(1) metadata reset followed by a full-span zeroing of the 
+ * usable capacity.
+ *
+ * Performance: 
+ *   - O(N) Linear Time, where N is the total usable capacity of the arena.
+ *
+ * Parameters:
+ *   - em: Pointer to the Easy Memory instance to be reset and zeroed.
+ *
+ * Safety & Behavior:
+ *   - Subject to the same Safety Policies as em_reset.
  */
 EMDEF void em_reset_zero(EM *EM_RESTRICT em) {
-    #if EM_SAFETY_LEVEL >= 1
-        if (!em) return;
-    #else
-        EM_ASSERT((em != NULL) && "Internal Error: 'em_reset_zero' called on NULL easy memory");
-    #endif
+    EM_CHECK_V((em != NULL), "Internal Error: 'em_reset_zero' called on NULL easy memory");
 
     em_reset(em); // Reset easy memory
     memset(block_data(em_get_tail(em)), 0, free_size_in_tail(em)); // Set tail to zero
 }
 
 /*
- * Create a nested easy memory with custom alignment
- * Allocates memory for a nested easy memory from a parent easy memory and initializes it
- * Returns NULL if the parent easy memory is NULL, requested size is too small, or allocation fails
+ * Create a nested Easy Memory instance with custom alignment
+ *
+ * Carves out a block from a parent arena and initializes it as an 
+ * independent child arena.
+ *
+ * Zero-Overhead Header (ABI Compatibility):
+ *   The EM and Block structures are strictly ABI compatible. The nested 
+ *   instance hijacks the parent's existing block header to store its own 
+ *   EM metadata. This ensures that 100% of the allocated payload is 
+ *   directly usable for child allocations, with zero additional overhead 
+ *   for the arena header itself.
+ *
+ * Performance:
+ *   - Allocation from parent: O(1) (tail) or O(log n) (tree).
+ *   - Initialization: O(1) Constant Time.
+ *
+ * Zero-Cost Parent Tracking:
+ *   - No explicit parent pointers are stored. The child arena identifies 
+ *     its parent using the "Physical Neighbor Walkback" strategy, 
+ *     traversing preceding blocks to find the owner. This saves 
+ *     8-16 bytes of metadata per instance.
+ *
+ * Alignment Requirements:
+ *   - Must be a power of two.
+ *   - Range: [4..512] bytes (32-bit systems) or [8..1024] bytes (64-bit systems).
+ *
+ * Capacity Limits:
+ *   - Usable Max: Exactly the 'size' requested from the parent. 
+ *     The child gains full access to the parent's allocated payload area.
+ *   - Physical Max: 512 MiB (32-bit) or 2 EiB (64-bit).
+ *
+ * Parameters:
+ *   - parent_em: Pointer to the active parent instance.
+ *   - size:      The desired usable capacity of the nested arena.
+ *   - alignment: Baseline alignment for the child's future allocations.
+ *
+ * Returns:
+ *   - Pointer to the child EM instance, or NULL on failure.
+ *
+ * Safety & Behavior:
+ *   - EM_POLICY_CONTRACT: Triggers EM_ASSERT on NULL parent or invalid size/alignment.
+ *   - EM_POLICY_DEFENSIVE: Returns NULL on invalid input or if parent is exhausted.
  */
 EMDEF EM *em_create_nested_aligned(EM *EM_RESTRICT parent_em, size_t size, size_t alignment) {
-    #if EM_SAFETY_LEVEL >= 1
-        if (!parent_em || size < EMBLOCK_MIN_SIZE || size > EMSIZE_MASK) return NULL;
-        if ((alignment & (alignment - 1)) != 0) return NULL;
-        if (alignment < EMMIN_ALIGNMENT|| alignment > EMMAX_ALIGNMENT) return NULL;
-    #else
-        EM_ASSERT((parent_em != NULL)                    && "Internal Error: 'em_create_nested_aligned' called with NULL parent easy memory");
-        EM_ASSERT((size >= EMBLOCK_MIN_SIZE)             && "Internal Error: 'em_create_nested_aligned' called with too small size");
-        EM_ASSERT((size <= EMSIZE_MASK)                  && "Internal Error: 'em_create_nested_aligned' called with too big size");
-        EM_ASSERT(((alignment & (alignment - 1)) == 0)   && "Internal Error: 'em_create_nested_aligned' called with invalid alignment");
-        EM_ASSERT((alignment >= EMMIN_ALIGNMENT)         && "Internal Error: 'em_create_nested_aligned' called with too small alignment");
-        EM_ASSERT((alignment <= EMMAX_ALIGNMENT)         && "Internal Error: 'em_create_nested_aligned' called with too big alignment");
-    #endif
+    EM_CHECK((parent_em != NULL)                 , NULL, "Internal Error: 'em_create_nested_aligned' called with NULL parent easy memory");
+    EM_CHECK((size >= EMBLOCK_MIN_SIZE)          , NULL, "Internal Error: 'em_create_nested_aligned' called with too small size");
+    EM_CHECK((size <= EMSIZE_MASK)               , NULL, "Internal Error: 'em_create_nested_aligned' called with too big size");
+    EM_CHECK(((alignment & (alignment - 1)) == 0), NULL, "Internal Error: 'em_create_nested_aligned' called with invalid alignment");
+    EM_CHECK((alignment >= EMMIN_ALIGNMENT)      , NULL, "Internal Error: 'em_create_nested_aligned' called with too small alignment");
+    EM_CHECK((alignment <= EMMAX_ALIGNMENT)      , NULL, "Internal Error: 'em_create_nested_aligned' called with too big alignment");
 
     void *data = em_alloc(parent_em, size);  // Allocate memory from the parent easy memory
     if (!data) return NULL;
@@ -2640,39 +3021,107 @@ EMDEF EM *em_create_nested_aligned(EM *EM_RESTRICT parent_em, size_t size, size_
 }
 
 /*
- * Create a nested easy memory with alignment of parent easy memory
- * Allocates memory for a nested easy memory from a parent easy memory and initializes it
- * Returns NULL if the parent easy memory is NULL, requested size is too small, or allocation fails
+ * Create a nested Easy Memory instance with default alignment
+ *
+ * Carves out a block from a parent arena and initializes it as an 
+ * independent child arena (nested instance) using the parent's alignment.
+ *
+ * Zero-Overhead Header (ABI Compatibility):
+ *   The EM and Block structures are strictly ABI compatible. The nested 
+ *   instance hijacks the parent's existing block header to store its own 
+ *   EM metadata. This ensures that 100% of the allocated payload is 
+ *   directly usable for child allocations, with zero additional overhead 
+ *   for the arena header itself.
+ *
+ * Performance:
+ *   - Allocation from parent: O(1) Constant Time (if from tail) or 
+ *     O(log n) (if from LLRB tree).
+ *   - Initialization: O(1) Constant Time.
+ *
+ * Zero-Cost Parent Tracking:
+ *   - No explicit parent pointers are stored in the hierarchy. The child 
+ *     arena identifies its parent header using the "Physical Neighbor 
+ *     Walkback" strategy, traversing preceding blocks to find the owner. 
+ *     This saves 8-16 bytes of metadata per nested instance.
+ *
+ * Alignment Requirements:
+ *   - Uses the default alignment of the parent EM instance.
+ *   - Range: [4..512] bytes (32-bit systems) or [8..1024] bytes (64-bit systems).
+ *
+ * Capacity Limits:
+ *   - Usable Max: Exactly the 'size' requested from the parent. 
+ *     The child gains full access to the parent's allocated payload area.
+ *   - Physical Max: 512 MiB (32-bit) or 2 EiB (64-bit), limited by bit-packing.
+ *   - Minimum: ~48 bytes (32-bit) or ~80 bytes (64-bit).
+ *
+ * Parameters:
+ *   - parent_em: Pointer to the active parent instance.
+ *   - size:      The desired usable capacity of the nested arena.
+ *
+ * Returns:
+ *   - Pointer to the child EM instance, or NULL if the parent cannot fit 
+ *     the requested block or if parameters are invalid.
+ *
+ * Safety & Behavior:
+ *   - Subject to the same Safety Policies and overflow checks as em_create_nested_aligned.
  */
 EMDEF EM *em_create_nested(EM *EM_RESTRICT parent_em, size_t size) {
-    #if EM_SAFETY_LEVEL >= 1
-        if (!parent_em) return NULL;
-    #else
-        EM_ASSERT((parent_em != NULL) && "Internal Error: 'em_create_nested' called with NULL parent easy memory");
-    #endif
+    EM_CHECK((parent_em != NULL), NULL, "Internal Error: 'em_create_nested' called with NULL parent easy memory");
 
     return em_create_nested_aligned(parent_em, size, em_get_alignment(parent_em));
 }
 
 /*
- * Create a scratch nested easy memory with custom alignment
- * Allocates scratch memory for a nested easy memory from a parent easy memory and initializes it
- * Returns NULL if the parent easy memory is NULL, requested size is too small, or allocation fails
+ * Create a scratch nested Easy Memory instance with custom alignment [IN PROGRESS]
+ *
+ * A specialized nested arena that is dynamically "bitten off" from the 
+ * extreme physical end (highest addresses) of the parent instance.
+ *
+ * Zero-Overhead Header (ABI Compatibility):
+ *   The EM and Block structures are strictly ABI compatible. The scratch 
+ *   instance hijacks the parent's block header to store its own EM metadata. 
+ *   No additional memory is wasted on a separate arena header.
+ *
+ * Instant Parent Tracking (O(1)):
+ *   Unlike standard nested arenas that use "Walkback" search, a scratch 
+ *   instance stores an explicit link to its parent in the 'prev' field of 
+ *   its header. Since scratch blocks are terminal and isolated, this 
+ *   repurposing of the 'prev' pointer ensures O(1) parent access with 
+ *   zero additional metadata overhead.
+ *
+ * Performance: 
+ *   - Allocation: O(1) Constant Time (Bites off from the tail).
+ *   - Initialization: O(1) Constant Time.
+ *
+ * Alignment Requirements:
+ *   - Must be a power of two.
+ *   - Range: [4..512] bytes (32-bit) or [8..1024] bytes (64-bit).
+ *
+ * Capacity Limits:
+ *   - Usable Max: Exactly the 'size' requested from the parent's tail.
+ *   - Physical Max: 512 MiB (32-bit) or 2 EiB (64-bit).
+ *
+ * Constraints:
+ *   - Only ONE active scratchpad allocation per any Easy Memory instance.
+ *   - Current scratch arena must be destroyed before creating a new one.
+ *
+ * Parameters:
+ *   - parent_em: Pointer to the active parent instance.
+ *   - size:      Total capacity to carve out from the parent's end.
+ *   - alignment: Baseline alignment for the scratch arena's allocations.
+ *
+ * Returns:
+ *   - Pointer to the scratch EM instance, or NULL if the parent's tail 
+ *     is insufficient or a scratch is already active.
  */
 EMDEF EM *em_create_scratch_aligned(EM *EM_RESTRICT parent_em, size_t size, size_t alignment) {
-    #if EM_SAFETY_LEVEL >= 1
-        if (!parent_em || em_get_has_scratch(parent_em) || size < EMBLOCK_MIN_SIZE || size > EMSIZE_MASK) return NULL;
-        if ((alignment & (alignment - 1)) != 0) return NULL;
-        if (alignment < EMMIN_ALIGNMENT|| alignment > EMMAX_ALIGNMENT) return NULL;
-    #else
-        EM_ASSERT((parent_em != NULL)                    && "Internal Error: 'em_create_scratch_aligned' called with NULL parent easy memory");
-        EM_ASSERT((!em_get_has_scratch(parent_em))       && "Internal Error: 'em_create_scratch_aligned' called when scratch already allocated in parent");
-        EM_ASSERT((size >= EMBLOCK_MIN_SIZE)             && "Internal Error: 'em_create_scratch_aligned' called with too small size");
-        EM_ASSERT((size <= EMSIZE_MASK)                  && "Internal Error: 'em_create_scratch_aligned' called with too big size");
-        EM_ASSERT(((alignment & (alignment - 1)) == 0)   && "Internal Error: 'em_create_scratch_aligned' called with invalid alignment");
-        EM_ASSERT((alignment >= EMMIN_ALIGNMENT)         && "Internal Error: 'em_create_scratch_aligned' called with too small alignment");
-        EM_ASSERT((alignment <= EMMAX_ALIGNMENT)         && "Internal Error: 'em_create_scratch_aligned' called with too big alignment");
-    #endif
+    EM_CHECK((parent_em != NULL)                 , NULL, "Internal Error: 'em_create_scratch_aligned' called with NULL parent easy memory");
+    EM_CHECK((!em_get_has_scratch(parent_em))    , NULL, "Internal Error: 'em_create_scratch_aligned' called when scratch already allocated in parent");
+    EM_CHECK((size >= EMBLOCK_MIN_SIZE)          , NULL, "Internal Error: 'em_create_scratch_aligned' called with too small size");
+    EM_CHECK((size <= EMSIZE_MASK)               , NULL, "Internal Error: 'em_create_scratch_aligned' called with too big size");
+    EM_CHECK(((alignment & (alignment - 1)) == 0), NULL, "Internal Error: 'em_create_scratch_aligned' called with invalid alignment");
+    EM_CHECK((alignment >= EMMIN_ALIGNMENT)      , NULL, "Internal Error: 'em_create_scratch_aligned' called with too small alignment");
+    EM_CHECK((alignment <= EMMAX_ALIGNMENT)      , NULL, "Internal Error: 'em_create_scratch_aligned' called with too big alignment");
         
     void *data = em_alloc_scratch_aligned(parent_em, size, alignment);  // Allocate memory from the parent easy memory scratch
     if (!data) return NULL;
@@ -2687,16 +3136,55 @@ EMDEF EM *em_create_scratch_aligned(EM *EM_RESTRICT parent_em, size_t size, size
 }
 
 /*
- * Create a scratch nested easy memory with alignment of parent easy memory
- * Allocates scratch memory for a nested easy memory from a parent easy memory and initializes it
- * Returns NULL if the parent easy memory is NULL, requested size is too small, or allocation fails
+ * Create a scratch nested Easy Memory instance with default alignment [IN PROGRESS]
+ *
+ * A convenience wrapper for em_create_scratch_aligned that uses the 
+ * parent instance's baseline alignment. 
+ *
+ * This function dynamically "bites off" memory from the extreme physical end 
+ * (highest addresses) of the parent instance.
+ *
+ * Zero-Overhead Header (ABI Compatibility):
+ *   The EM and Block structures are strictly ABI compatible. The scratch 
+ *   instance hijacks the parent's block header to store its own EM metadata. 
+ *   This ensures that 100% of the allocated scratch payload is directly 
+ *   usable for allocations, with zero additional overhead for the arena header.
+ *
+ * Instant Parent Tracking (O(1)):
+ *   Unlike standard nested arenas that use "Walkback" search, a scratch 
+ *   instance stores an explicit link to its parent in the 'prev' field of 
+ *   its header. Since scratch blocks are terminal and isolated, this 
+ *   repurposing of the 'prev' pointer ensures O(1) parent access with 
+ *   zero additional metadata overhead.
+ *
+ * Performance: 
+ *   - Allocation: O(1) Constant Time (Bites off from the parent's tail).
+ *   - Initialization: O(1) Constant Time.
+ *
+ * Alignment Requirements:
+ *   - Uses the default alignment of the parent EM instance.
+ *   - Range: [4..512] bytes (32-bit systems) or [8..1024] bytes (64-bit systems).
+ *
+ * Capacity Limits:
+ *   - Usable Max: Exactly the 'size' requested from the parent's tail area.
+ *   - Physical Max: 512 MiB (32-bit) or 2 EiB (64-bit), limited by bit-packing.
+ *   - Minimum: ~48 bytes (32-bit) or ~80 bytes (64-bit).
+ *
+ * Constraints:
+ *   - Only ONE active scratchpad allocation (raw or arena) per any 
+ *     Easy Memory instance.
+ *   - You must destroy the current scratch arena before creating a new one.
+ *
+ * Parameters:
+ *   - parent_em: Pointer to the active parent instance.
+ *   - size:      Total capacity to carve out from the parent's end.
+ *
+ * Returns:
+ *   - Pointer to the scratch EM instance, or NULL if the parent's tail 
+ *     is insufficient or a scratch is already active.
  */
 EMDEF EM *em_create_scratch(EM *EM_RESTRICT parent_em, size_t size) {
-    #if EM_SAFETY_LEVEL >= 1
-        if (!parent_em) return NULL;
-    #else
-        EM_ASSERT((parent_em != NULL) && "Internal Error: 'em_create_scratch' called with NULL parent easy memory");
-    #endif
+    EM_CHECK((parent_em != NULL), NULL, "Internal Error: 'em_create_scratch' called with NULL parent easy memory");
 
     return em_create_scratch_aligned(parent_em, size, em_get_alignment(parent_em));
 }
@@ -2707,18 +3195,42 @@ EMDEF EM *em_create_scratch(EM *EM_RESTRICT parent_em, size_t size) {
 
 /*
  * Create a bump allocator
- * Initializes a bump allocator within a parent easy memory
- * Returns NULL if the parent easy memory is NULL, requested size is too small, or allocation fails
+ *
+ * Initializes a linear (bump) allocator within a parent Easy Memory instance. 
+ * This is ideal for high-speed, temporary allocations where all memory is 
+ * released at once.
+ *
+ * Zero-Overhead Header (ABI Compatibility):
+ *   The Bump and Block structures are strictly ABI compatible. The bump 
+ *   allocator hijacks the parent's block header to store its metadata (offset, 
+ *   capacity, and parent link). No extra memory is wasted on the allocator's 
+ *   own management structure.
+ *
+ * Performance:
+ *   - Creation: O(1) (from tail) or O(log n) (from tree) of parent arena.
+ *   - Allocation: O(1) Constant Time (linear pointer shift).
+ *
+ * Instant Parent Tracking (O(1)):
+ *   The bump allocator stores a direct pointer to its parent EM instance within 
+ *   its hijacked header, ensuring O(1) complexity for destruction and trimming.
+ *
+ * Capacity Limits:
+ *   - Physical Max: 512 MiB (32-bit) or 2 EiB (64-bit).
+ *   - Usable Max: Exactly the 'size' requested from the parent. 
+ *     Note: The internal offset starts after the header (sizeof(Bump)).
+ *   - Minimum: 16 bytes (EM_MIN_BUFFER_SIZE).
+ *
+ * Parameters:
+ *   - parent_em: Pointer to the active parent instance.
+ *   - size:      Total capacity to carve out from the parent.
+ *
+ * Returns:
+ *   - Pointer to the Bump allocator instance, or NULL on failure.
  */
 EMDEF Bump *em_create_bump(EM *EM_RESTRICT parent_em, size_t size) {
-    #if EM_SAFETY_LEVEL >= 1
-        if (!parent_em) return NULL;
-        if (size > EMSIZE_MASK || size < EM_MIN_BUFFER_SIZE) return NULL;  // Check for minimal reasonable size
-    #else
-        EM_ASSERT((parent_em != NULL)                  && "Internal Error: 'em_create_bump' called with NULL parent easy memory");
-        EM_ASSERT((size <= EMSIZE_MASK)                 && "Internal Error: 'em_create_bump' called with too big size");
-        EM_ASSERT((size >= EM_MIN_BUFFER_SIZE)          && "Internal Error: 'em_create_bump' called with too small size");
-    #endif
+    EM_CHECK((parent_em != NULL),          NULL, "Internal Error: 'em_create_bump' called with NULL parent easy memory");
+    EM_CHECK((size <= EMSIZE_MASK),        NULL, "Internal Error: 'em_create_bump' called with too big size");
+    EM_CHECK((size >= EM_MIN_BUFFER_SIZE), NULL, "Internal Error: 'em_create_bump' called with too small size");
 
     void *data = em_alloc(parent_em, size);  // Allocate memory from the parent easy memory
     if (!data) return NULL;
@@ -2746,18 +3258,40 @@ EMDEF Bump *em_create_bump(EM *EM_RESTRICT parent_em, size_t size) {
 
 /*
  * Allocate memory from a bump allocator
- * Returns a pointer to the allocated memory or NULL if allocation fails
- * May return NOT aligned pointer
+ *
+ * Performs a lightning-fast linear allocation by advancing an internal offset.
+ *
+ * Performance:
+ *   - O(1) Constant Time. The fastest possible allocation (single addition).
+ *
+ * Alignment:
+ *   - This basic version returns memory with NO additional alignment. 
+ *     The result depends on the current offset state. Use em_bump_alloc_aligned 
+ *     for strict boundary requirements.
+ *
+ * Capacity Limits:
+ *   - Maximum: Remaining free space within the bump instance.
+ *
+ * Parameters:
+ *   - bump: Pointer to the active bump allocator.
+ *   - size: Bytes to allocate.
+ *
+ * Returns:
+ *   - Pointer to the allocated memory.
+ *   - Returns NULL if the allocator is exhausted or if 'size' is 0.
+ *
+ * Safety & Behavior:
+ *   - EM_POLICY_CONTRACT: 
+ *       Triggers EM_ASSERT if 'bump' is NULL or 'size' is 0.
+ *   - EM_POLICY_DEFENSIVE: 
+ *       Returns NULL if 'bump' is NULL, 'size' is 0, or capacity is exceeded.
  */
 EMDEF void *em_bump_alloc(Bump *EM_RESTRICT bump, size_t size) {
-    #if EM_SAFETY_LEVEL >= 1
-        if (!bump) return NULL;
-    #else
-        EM_ASSERT((bump != NULL) && "Internal Error: 'em_bump_alloc' called on NULL bump allocator");
-    #endif
-    
+    EM_CHECK((bump != NULL), NULL, "Internal Error: 'em_bump_alloc' called on NULL bump allocator");
+    EM_CHECK((size > 0),     NULL, "Internal Error: 'em_bump_alloc' called with zero size");
+
     size_t offset = bump_get_offset(bump);
-    if (size == 0 || size >= (bump_get_capacity(bump) - offset + sizeof(Bump))) return NULL;
+    if (size >= (bump_get_capacity(bump) - offset + sizeof(Bump))) return NULL;
 
     void *memory = (char *)bump + offset;
     bump_set_offset(bump, offset + size);
@@ -2767,27 +3301,51 @@ EMDEF void *em_bump_alloc(Bump *EM_RESTRICT bump, size_t size) {
 
 /*
  * Allocate aligned memory from a bump allocator
- * Returns a pointer to the allocated memory or NULL if allocation fails
+ *
+ * Performs a linear allocation while ensuring the returned pointer satisfies 
+ * the specified alignment boundary.
+ *
+ * Performance:
+ *   - O(1) Constant Time.
+ *
+ * Alignment Requirements:
+ *   - Must be a power of two.
+ *   - Range: [4..512] bytes (32-bit systems) or [8..1024] bytes (64-bit systems).
+ *
+ * Capacity Limits:
+ *   - Maximum: Remaining free space within the bump instance.
+ *   - Physical Max: 512 MiB (32-bit) or 2 EiB (64-bit).
+ *
+ * Parameters:
+ *   - bump:      Pointer to the active bump allocator.
+ *   - size:      Bytes to allocate.
+ *   - alignment: Boundary (power of two, within supported range).
+ *
+ * Returns:
+ *   - Aligned pointer to the allocated memory.
+ *   - Returns NULL if the allocator is exhausted, if 'size' is 0, if 'alignment' 
+ *     is invalid, or if an integer overflow is detected during padding calculation.
+ *
+ * Safety & Behavior:
+ *   - EM_POLICY_CONTRACT: 
+ *       Triggers EM_ASSERT on NULL 'bump', zero 'size', invalid alignment, 
+ *       or integer overflow.
+ *   - EM_POLICY_DEFENSIVE: 
+ *       Returns NULL on any invalid input, detected overflow, or exhaustion.
  */
 EMDEF void *em_bump_alloc_aligned(Bump *EM_RESTRICT bump, size_t size, size_t alignment) {
-    #if EM_SAFETY_LEVEL >= 1
-        if (!bump) return NULL;
-        if ((alignment & (alignment - 1)) != 0) return NULL;
-        if (alignment < EMMIN_ALIGNMENT|| alignment > EMMAX_ALIGNMENT) return NULL;
-        if (size == 0) return NULL;
-    #else
-        EM_ASSERT((bump != NULL)                         && "Internal Error: 'em_bump_alloc_aligned' called on NULL bump allocator");
-        EM_ASSERT(((alignment & (alignment - 1)) == 0)   && "Internal Error: 'em_bump_alloc_aligned' called with invalid alignment");
-        EM_ASSERT((alignment >= EMMIN_ALIGNMENT)         && "Internal Error: 'em_bump_alloc_aligned' called with too small alignment");
-        EM_ASSERT((alignment <= EMMAX_ALIGNMENT)         && "Internal Error: 'em_bump_alloc_aligned' called with too big alignment");
-        EM_ASSERT((size > 0)                             && "Internal Error: 'em_bump_alloc_aligned' called with zero size");
-    #endif
+    EM_CHECK((bump != NULL)                      , NULL, "Internal Error: 'em_bump_alloc_aligned' called on NULL bump allocator");
+    EM_CHECK(((alignment & (alignment - 1)) == 0), NULL, "Internal Error: 'em_bump_alloc_aligned' called with invalid alignment");
+    EM_CHECK((alignment >= EMMIN_ALIGNMENT)      , NULL, "Internal Error: 'em_bump_alloc_aligned' called with too small alignment");
+    EM_CHECK((alignment <= EMMAX_ALIGNMENT)      , NULL, "Internal Error: 'em_bump_alloc_aligned' called with too big alignment");
+    EM_CHECK((size > 0)                          , NULL, "Internal Error: 'em_bump_alloc_aligned' called with zero size");
 
     uintptr_t current_ptr = (uintptr_t)bump + bump_get_offset(bump);
     uintptr_t aligned_ptr = align_up(current_ptr, alignment);
     size_t padding = aligned_ptr - current_ptr;
 
-    if ((size_t)size > SIZE_MAX - padding) return NULL;
+    EM_CHECK(((size_t)size <= SIZE_MAX - padding), NULL, "Internal Error: 'em_bump_alloc_aligned' size overflow");
+
 
     size_t total_size = padding + size;
 
@@ -2801,14 +3359,26 @@ EMDEF void *em_bump_alloc_aligned(Bump *EM_RESTRICT bump, size_t size, size_t al
 
 /*
  * Trim a bump allocator
- * Trims the bump allocator and return free part back to easy memory
+ *
+ * Calculates the unused portion of the bump allocator and returns it 
+ * to the parent Easy Memory instance.
+ *
+ * Performance:
+ *   - O(N), where N is the number of physically preceding free blocks/arenas 
+ *     in the parent (due to the Physical Neighbor Walkback used for merging).
+ *
+ * Rationale:
+ *   Allows "reserving" a large chunk for temporary work and then "giving back" 
+ *   what wasn't actually used, preventing memory waste.
+ *
+ * Parameters:
+ *   - bump: Pointer to the bump allocator to be trimmed.
+ *
+ * Safety & Behavior:
+ *   - Subject to Safety Policies. Requires a valid 'bump' instance.
  */
 EMDEF void em_bump_trim(Bump *EM_RESTRICT bump) {
-    #if EM_SAFETY_LEVEL >= 1
-        if (!bump) return;
-    #else
-        EM_ASSERT((bump != NULL) && "Internal Error: 'em_bump_trim' called on NULL bump allocator");
-    #endif
+    EM_CHECK_V((bump != NULL), "Internal Error: 'em_bump_trim' called on NULL bump allocator");
 
     EM *parent = bump_get_em(bump);
     size_t parent_align = em_get_alignment(parent);
@@ -2827,28 +3397,68 @@ EMDEF void em_bump_trim(Bump *EM_RESTRICT bump) {
 
 /*
  * Reset a bump allocator
- * Resets the bump allocator's offset to the beginning
+ *
+ * Wipes the internal offset, allowing the allocator to reuse its entire 
+ * capacity from the beginning.
+ *
+ * Performance:
+ *   - O(1) Constant Time. Only the internal offset field is updated.
+ *
+ * Mechanism:
+ *   The function sets the internal offset back to the start (immediately 
+ *   following the Bump header). It does NOT physically clear the memory 
+ *   content; it only marks the entire capacity as available for new allocations.
+ *
+ * Parameters:
+ *   - bump: Pointer to the active bump allocator to be reset.
+ *
+ * Safety & Behavior:
+ *   - EM_POLICY_CONTRACT: 
+ *       Triggers EM_ASSERT if 'bump' is NULL.
+ *   - EM_POLICY_DEFENSIVE: 
+ *       Safely returns without action if 'bump' is NULL.
+ *
+ * Note: After a reset, ALL pointers previously allocated from this 
+ * bump instance become logically invalid and will be overwritten 
+ * by subsequent allocations.
  */
 EMDEF void em_bump_reset(Bump *EM_RESTRICT bump) {
-    #if EM_SAFETY_LEVEL >= 1
-        if (!bump) return;
-    #else
-        EM_ASSERT((bump != NULL) && "Internal Error: 'em_bump_reset' called on NULL bump allocator");
-    #endif
+    EM_CHECK_V((bump != NULL), "Internal Error: 'em_bump_reset' called on NULL bump allocator");
     
     bump_set_offset(bump, sizeof(Bump));
 }
 
 /*
  * Destroy a bump allocator
- * Returns memory back to parent easy memory
+ *
+ * Reclaims the entire memory block used by the bump allocator and 
+ * returns it to the parent Easy Memory instance.
+ *
+ * Zero-Overhead Header (ABI Compatibility):
+ *   Since the Bump and Block structures are strictly ABI compatible, the 
+ *   destruction process treats the allocator as a standard memory block.
+ *
+ * Performance:
+ *   - O(N), where N is the number of physically adjacent free blocks 
+ *     and nested arenas located immediately BEFORE the bump instance 
+ *     in the parent's memory.
+ *   - Rationale: The library performs a "Physical Neighbor Walkback" 
+ *     to identify the parent header and perform coalescing (merging).
+ *
+ * Parameters:
+ *   - bump: Pointer to the bump allocator to be destroyed.
+ *
+ * Safety & Behavior:
+ *   - EM_POLICY_CONTRACT: 
+ *       Triggers EM_ASSERT if 'bump' is NULL.
+ *   - EM_POLICY_DEFENSIVE: 
+ *       Safely returns without action if 'bump' is NULL.
+ *
+ * Note: After this call, the 'bump' pointer and ALL memory pointers 
+ * previously allocated from it become invalid (Use-After-Free risk).
  */
 EMDEF void em_bump_destroy(Bump *bump) {
-    #if EM_SAFETY_LEVEL >= 1
-        if (!bump) return;
-    #else
-        EM_ASSERT((bump != NULL) && "Internal Error: 'em_bump_destroy' called on NULL bump allocator");
-    #endif
+    EM_CHECK_V((bump != NULL), "Internal Error: 'em_bump_destroy' called on NULL bump allocator");
 
     em_free_block_full(bump_get_em(bump), (Block *)(void *)bump);
 }

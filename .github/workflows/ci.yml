@@ -161,7 +161,7 @@ jobs:
             -w /workspace \
             --env UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
             ${{ env.REGISTRY_IMAGE_BASE }}:arm64 \
-            make tests_full CC='gcc -g -fsanitize=alignment'
+            make tests_full CC='gcc' SAN_FLAGS="-fsanitize=alignment,undefined"
 
   # Job 5: Big Endian (s390x)
   build-and-test-big-endian:
@@ -184,7 +184,7 @@ jobs:
             -v ${{ github.workspace }}:/workspace \
             -w /workspace \
             ${{ env.REGISTRY_IMAGE_BASE }}:s390x \
-            make tests_full CC=gcc
+            make tests_full CC=gcc SAN_FLAGS=""
 
   # Job 6: ARM32
   build-and-test-arm32:

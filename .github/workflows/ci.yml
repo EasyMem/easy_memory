@@ -225,3 +225,49 @@ jobs:
       - name: Compile and Test
         run: |
           make tests STD_C=${{ matrix.std }}
+  
+  # Job 8: Test various optimization levels
+  build-and-test-optimizations:
+    name: ${{ matrix.os }} | ${{ matrix.compiler }} | ${{ matrix.opt }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        compiler: [gcc, clang]
+        opt: [-O1, -O2, -O3, -Os]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and Test
+        run: make tests CC=${{ matrix.compiler }} CFLAGS="-Werror ${{ matrix.opt }}"
+
+  # Job 9: MSVC with different architectures and optimizations
+  build-and-test-msvc:
+    name: Windows | MSVC | ${{ matrix.arch }} | ${{ matrix.opt }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, x86]
+        opt: [/O1, /O2, /Ox]
+    
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and Test (MSVC)
+        shell: cmd
+        run: |
+          if "${{ matrix.arch }}"=="x86" (
+            call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars32.bat"
+          ) else (
+            call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          )
+          
+          cd tests
+          FOR %%f IN (*.c) DO (
+            echo --- Compiling %%f with MSVC (${{ matrix.arch }}, ${{ matrix.opt }}) ---
+            cl.exe /W4 /WX /DDEBUG ${{ matrix.opt }} /I.. /Fe:%%~nf.exe %%f
+            if errorlevel 1 exit /b 1
+            echo --- Running %%~nf.exe ---
+            %%~nf.exe
+            if errorlevel 1 exit /b 1
+          )

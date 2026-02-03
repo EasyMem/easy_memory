@@ -1962,12 +1962,12 @@ static inline EM *get_parent_em(Block *block) {
      * To get more understanding whats going on go to 'em_new_static_custom'
      * function. 
     */
-    uintptr_t *detector_spot = (uintptr_t *)((char *)prev - sizeof(uintptr_t));
+    uintptr_t *detector_spot = (uintptr_t *)(void *)((char *)prev - sizeof(uintptr_t));
     uintptr_t val = *detector_spot;
     
-    if (val & 1) return (EM *)((char *)prev - (val >> 1));
+    if (val & 1) return (EM *)(void *)((char *)prev - (val >> 1));
 
-    return (EM *)((char *)prev - sizeof(EM));
+    return (EM *)(void *)((char *)prev - sizeof(EM));
 }
 
 
@@ -2273,7 +2273,7 @@ EMDEF void em_free(void *data) {
      *  whether the XORed value before the user data matches the expected value.
     */
 
-    uintptr_t *spot_before_user_data = (uintptr_t *)((char *)data - sizeof(uintptr_t));
+    uintptr_t *spot_before_user_data = (uintptr_t *)(void *)((char *)data - sizeof(uintptr_t));
     uintptr_t check = *spot_before_user_data ^ (uintptr_t)data;
     if (check == (uintptr_t)EM_MAGIC) {
         block = (Block *)(void *)((char *)data - sizeof(Block));
@@ -3240,7 +3240,7 @@ EMDEF Bump *em_create_bump(EM *EM_RESTRICT parent_em, size_t size) {
 
     Block *block = NULL;
 
-    uintptr_t *spot_before_user_data = (uintptr_t *)((char *)data - sizeof(uintptr_t));
+    uintptr_t *spot_before_user_data = (uintptr_t *)(void *)((char *)data - sizeof(uintptr_t));
     uintptr_t check = *spot_before_user_data ^ (uintptr_t)data;
     if (check == (uintptr_t)EM_MAGIC) {
         block = (Block *)(void *)((char *)data - sizeof(Block));
@@ -3602,7 +3602,7 @@ EMDEF void print_fancy(EM *em, size_t bar_size) {
         
         // Check each block
         size_t current_pos = 0;
-        Block *current = (Block *)((char *)em + sizeof(EM));
+        Block *current = (Block *)(void *)((char *)em + sizeof(EM));
         
         while (current) {
             // Position of block metadata

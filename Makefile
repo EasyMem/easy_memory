@@ -1,5 +1,14 @@
 # Makefile for compiling and running easy_memory allocator tests
 
+
+UNAME_S := $(shell uname -s)
+
+SAN_FLAGS = -fsanitize=address,undefined
+
+ifneq ($(UNAME_S), Darwin)
+    SAN_FLAGS += -fsanitize=leak
+endif
+
 CC ?= clang
 STD_C ?= c99
 CFLAGS = -Werror -Wall -Wextra \
@@ -20,12 +29,15 @@ CFLAGS = -Werror -Wall -Wextra \
 		 -W -std=$(STD_C) \
 		 -g3 \
 		 -fno-omit-frame-pointer \
-		 -fsanitize=address,undefined,leak \
+		 $(SAN_FLAGS) \
 		 -fno-sanitize-recover=all \
 		 -I.
 DEBUG_FLAGS = -DDEBUG # Debug flag
 COV_FLAGS = -O0 -fprofile-arcs -ftest-coverage # Coverage flags
 LDFLAGS_COV = -lgcov # Linker flag for coverage
+
+export ASAN_OPTIONS=allocator_may_return_null=1:detect_stack_use_after_return=1
+export UBSAN_OPTIONS=halt_on_error=0:exitcode=1:print_stacktrace=1
 
 TEST_DIR = tests
 TEST_SRCS = $(wildcard $(TEST_DIR)/*.c)

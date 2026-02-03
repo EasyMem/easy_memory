@@ -29,7 +29,6 @@ CFLAGS = -Werror -Wall -Wextra \
 		 -W -std=$(STD_C) \
 		 -g3 \
 		 -fno-omit-frame-pointer \
-		 $(SAN_FLAGS) \
 		 -fno-sanitize-recover=all \
 		 -I.
 DEBUG_FLAGS = -DDEBUG # Debug flag
@@ -57,15 +56,14 @@ all: clean list
 
 # Compilation of each test without debug information
 $(TEST_DIR)/%_silent: $(TEST_DIR)/%.c easy_memory.h $(TEST_DIR)/test_utils.h
-	$(CC) $(CFLAGS) $< -o $@
+	$(CC) $(CFLAGS) $(SAN_FLAGS) $< -o $@
 
 # Compilation of each test with debug information
 $(TEST_DIR)/%_debug: $(TEST_DIR)/%.c easy_memory.h $(TEST_DIR)/test_utils.h
-	$(CC) $(CFLAGS) $(DEBUG_FLAGS) $< -o $@
-
+	$(CC) $(CFLAGS) $(DEBUG_FLAGS) $(SAN_FLAGS) $< -o $@
 # Fallback test to ensure generic min_exponent_of implementation works
 test_fallback:
-	$(CC) $(CFLAGS) -DEM_FORCE_GENERIC tests/validation_test.c -o test_fallback
+	$(CC) $(CFLAGS) $(SAN_FLAGS) -DEM_FORCE_GENERIC tests/validation_test.c -o test_fallback
 	./test_fallback
 
 # --- Coverage Build Steps ---
@@ -83,9 +81,7 @@ $(TEST_DIR)/%_coverage: $(TEST_DIR)/%.cov.o
 # Pattern rule for running individual tests (always with debug)
 test_%: $(TEST_DIR)/%_test_debug
 	@printf "\n--- Running $< (debug mode) ---\n"
-	@ASAN_OPTIONS=allocator_may_return_null=1:detect_stack_use_after_return=1 \
-	 UBSAN_OPTIONS=halt_on_error=0:exitcode=1:print_stacktrace=1 \
-	 ./$<
+	@./$<
 	@if [ $$? -ne 0 ]; then \
 		printf "\nTest $< FAILED!\n"; \
 		exit 1; \
@@ -103,8 +99,9 @@ build_debug: $(TEST_SRCS:%.c=%_debug)
 build_coverage: $(TEST_COV_BINS)
 
 # Memory leak check using valgrind
-valgrind: build_silent
+valgrind:
 	@printf "Running valgrind memory check on all tests...\n"
+	@$(MAKE) build_silent SAN_FLAGS=""
 	@for test in $(TEST_SRCS:%.c=%_silent) ; do \
 		printf "\n--- Checking $$test ---\n" ; \
 		valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes ./$$test ; \
@@ -116,7 +113,7 @@ tests: build_silent
 	@printf "Running all tests (normal mode)...\n"
 	@for test in $(TEST_SRCS:%.c=%_silent) ; do \
 		printf "\n--- Running $$test ---\n" ; \
-		ASAN_OPTIONS=allocator_may_return_null=1 ./$$test ; \
+		./$$test ; \
 		if [ $$? -ne 0 ]; then \
 			printf "\nTest $$test FAILED with exit code $$?\n"; \
 			exit_code=1; \
@@ -134,7 +131,7 @@ tests_full: build_debug
 	@printf "Running all tests (debug mode)...\n"
 	@for test in $(TEST_SRCS:%.c=%_debug) ; do \
 		printf "\n--- Running $$test ---\n" ; \
-		ASAN_OPTIONS=allocator_may_return_null=1 ./$$test ; \
+		./$$test ; \
 		if [ $$? -ne 0 ]; then \
 			printf "\nTest $$test FAILED with exit code $$?\n"; \
 			exit_code=1; \

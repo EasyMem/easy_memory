@@ -3006,7 +3006,7 @@ EMDEF EM *em_create_nested_aligned(EM *EM_RESTRICT parent_em, size_t size, size_
 
     Block *block = NULL;
 
-    uintptr_t *spot_before_user_data = (uintptr_t *)((char *)data - sizeof(uintptr_t));
+    uintptr_t *spot_before_user_data = (uintptr_t *)(void *)((char *)data - sizeof(uintptr_t));
     uintptr_t check = *spot_before_user_data ^ (uintptr_t)data;
     if (check == (uintptr_t)EM_MAGIC) {
         block = (Block *)(void *)((char *)data - sizeof(Block));

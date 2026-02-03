@@ -231,7 +231,7 @@ static void test_custom_alignment_alloc(void) {
     void *block = em_alloc_aligned(em, alloc_size, custom_alignment);
     ASSERT(block != NULL, "Custom aligned allocation should succeed");
     ASSERT(((uintptr_t)block % custom_alignment) == 0, "Allocated block should be aligned to custom alignment");
-    uintptr_t *spot_before_user_data = (uintptr_t *)((char *)block - sizeof(uintptr_t));
+    uintptr_t *spot_before_user_data = (uintptr_t *)(void *)((char *)block - sizeof(uintptr_t));
     uintptr_t check = *spot_before_user_data ^ (uintptr_t)block;
     ASSERT(check != (uintptr_t)0xDEADBEEF, "Block should have alignment padding");
     ASSERT(check % sizeof(uintptr_t) == 0, "Retrieved block pointer should be properly aligned");
@@ -251,7 +251,7 @@ static void test_custom_alignment_alloc(void) {
     void *block2 = em_alloc_aligned(em, alloc_size, custom_alignment);
     ASSERT(block2 != NULL, "Custom aligned allocation after fragmentation should succeed");
     ASSERT(((uintptr_t)block2 % custom_alignment) == 0, "Allocated block should be aligned to custom alignment");
-    spot_before_user_data = (uintptr_t *)((char *)block2 - sizeof(uintptr_t));
+    spot_before_user_data = (uintptr_t *)(void *)((char *)block2 - sizeof(uintptr_t));
     check = *spot_before_user_data ^ (uintptr_t)block2;
     ASSERT(check != (uintptr_t)0xDEADBEEF, "Block should have alignment padding");
     ASSERT(check % sizeof(uintptr_t) == 0, "Retrieved block pointer should be properly aligned");
@@ -291,8 +291,8 @@ static void test_custom_alignment_alloc(void) {
     } TestStruct;
 
     TestStruct *s = em_alloc(em, sizeof(TestStruct));
-    s->next = (void *)0x12345678;
-    s->data = (void *)0xABCDEF00;
+    s->next = (void *)(uintptr_t)0x12345678;
+    s->data = (void *)(uintptr_t)0xABCDEF00;
 
     em_free(s);
 
@@ -652,7 +652,7 @@ static void test_alignment_alloc(void) {
         ASSERT((uintptr_t)p3 % 128 == 0, "Allocation should be properly 128-byte aligned");
 
         Block *new_first_block = em_get_first_block(em);
-        ASSERT(new_first_block != (Block *)((char *)p3 - sizeof(Block)), "First block pointer MUST change (split happened)");
+        ASSERT(new_first_block != (Block *)(void *)((char *)p3 - sizeof(Block)), "First block pointer MUST change (split happened)");
         ASSERT(count_blocks_in_em(em) == 3, "Split should happen, two blocks allocated in EM");
     }
 
@@ -731,7 +731,7 @@ static void test_static_em_detector_coverage(void) {
     ASSERT(em != NULL, "EM should be created");
 
     Block *first = em_get_first_block(em);
-    uintptr_t *detector_spot = (uintptr_t *)((char *)first - sizeof(uintptr_t));
+    uintptr_t *detector_spot = (uintptr_t *)(void *)((char *)first - sizeof(uintptr_t));
     ASSERT((*detector_spot & 1) == 1, "Magic LSB Detector should be set");
 }
 

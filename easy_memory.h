@@ -1512,9 +1512,13 @@ static inline Block *next_block(const EM *em, const Block *block) {
  */
 static inline Block *create_block(void *point) {
     EM_ASSERT((point != NULL) && "Internal Error: 'create_block' called on NULL pointer");
+    
+    Block *block = (Block *)point;
+    
+    block->size_and_alignment = 0;
+    block->prev = NULL;
 
     // Initialize block metadata
-    Block *block = (Block *)point;
     set_size(block, 0);
     set_prev(block, NULL);
     set_is_free(block, true);
@@ -2652,6 +2656,12 @@ EMDEF EM *em_create_static_aligned(void *EM_RESTRICT memory, size_t size, size_t
     
     EM *em = (EM *)aligned_addr;
 
+    // Initialize all fields to zero/NULL
+    em->as.self.capacity_and_alignment = 0;
+    em->as.self.prev = NULL;
+    em->as.self.tail = NULL;
+    em->as.self.free_blocks = NULL;
+
     /*
      * Magic LSB Padding Detector
      *
@@ -3017,8 +3027,11 @@ EMDEF EM *em_create_nested_aligned(EM *EM_RESTRICT parent_em, size_t size, size_
     }
     // LCOV_EXCL_STOP
 
+    Block *prev = get_prev(block);
+
     EM *em = em_create_static_aligned((void *)block, size, alignment);
     em_set_is_nested(em, true); // Mark the easy memory as nested
+    set_prev(block, prev);      // Restore the previous block link
 
     return em;
 }
@@ -3130,10 +3143,11 @@ EMDEF EM *em_create_scratch_aligned(EM *EM_RESTRICT parent_em, size_t size, size
     if (!data) return NULL;
 
     Block *block = (Block *)(void *)((char *)data - sizeof(Block)); // Scratch block is always with no padding before user data
-    set_prev(block, parent_em); // Scratch block has no previous block so we use prev pointer to store parent EM pointer
-
+    
     EM *em = em_create_static_aligned((void *)block, size, alignment);
     em_set_is_nested(em, true); // Mark the easy memory as nested
+    set_color(&(em->as.block_representation), EMBLACK);  // Scratch block is always black to highlight its special status
+    set_prev(&(em->as.block_representation), parent_em); // Scratch block has no previous block so we use prev pointer to store parent EM pointer
 
     return em;
 }

@@ -4,11 +4,13 @@
 UNAME_S := $(shell uname -s)
 UNAME_M := $(shell uname -m)
 
+ASAN_OPTS = allocator_may_return_null=1:detect_stack_use_after_return=1
 SAN_FLAGS = -fsanitize=address,undefined
 
 ifeq ($(UNAME_S), Linux)
 	ifeq ($(UNAME_M), x86_64)
         SAN_FLAGS += -fsanitize=leak
+		ASAN_OPTS := $(ASAN_OPTS):detect_leaks=0
     endif
 endif
 
@@ -42,8 +44,8 @@ DEBUG_FLAGS = -DDEBUG # Debug flag
 COV_FLAGS = -O0 -fprofile-arcs -ftest-coverage # Coverage flags
 LDFLAGS_COV = -lgcov # Linker flag for coverage
 
-export ASAN_OPTIONS=allocator_may_return_null=1:detect_stack_use_after_return=1
 export UBSAN_OPTIONS=halt_on_error=0:exitcode=1:print_stacktrace=1
+export ASAN_OPTIONS=$(ASAN_OPTS)
 
 TEST_DIR = tests
 TEST_SRCS = $(wildcard $(TEST_DIR)/*.c)

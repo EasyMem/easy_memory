@@ -48,6 +48,7 @@ static void test_complex_allocation_pattern(void) {
     // Summary report instead of spamming asserts
     ASSERT(allocated > 0, "Should successfully allocate some objects");
     ASSERT(pattern_errors == 0, "All memory patterns should be valid");
+    ASSERT(alloc_errors == 0, "There should be no allocation errors in this test");
     
     #ifdef DEBUG
     printf("Allocated %d objects of various sizes (%d allocation failures)\n", allocated, alloc_errors);

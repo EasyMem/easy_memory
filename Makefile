@@ -5,8 +5,12 @@ UNAME_S := $(shell uname -s)
 
 SAN_FLAGS = -fsanitize=address,undefined
 
-ifneq ($(UNAME_S), Darwin)
+ifeq ($(UNAME_S), Linux)
     SAN_FLAGS += -fsanitize=leak
+endif
+
+ifneq (,$(filter MINGW% MSYS%,$(UNAME_S)))
+    SAN_FLAGS = 
 endif
 
 CC ?= clang

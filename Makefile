@@ -2,7 +2,27 @@
 
 CC ?= clang
 STD_C ?= c99
-CFLAGS = -Wall -Wextra -std=$(STD_C) -g -I.
+CFLAGS = -Werror -Wall -Wextra \
+	     -Wshadow \
+		 -Wconversion -Wsign-conversion \
+		 -Wundef \
+		 -Wstrict-aliasing=2 \
+		 -Wpointer-arith \
+		 -Wdouble-promotion \
+		 -Wcast-align \
+		 -Wcast-qual \
+		 -Wmissing-declarations \
+		 -Wmissing-prototypes \
+		 -Wstrict-prototypes \
+		 -Wpadded \
+		 -Wint-to-pointer-cast \
+		 -Wpointer-to-int-cast \
+		 -W -std=$(STD_C) \
+		 -g3 \
+		 -fno-omit-frame-pointer \
+		 -fsanitize=address,undefined,leak \
+		 -fno-sanitize-recover=all \
+		 -I.
 DEBUG_FLAGS = -DDEBUG # Debug flag
 COV_FLAGS = -O0 -fprofile-arcs -ftest-coverage # Coverage flags
 LDFLAGS_COV = -lgcov # Linker flag for coverage
@@ -51,7 +71,9 @@ $(TEST_DIR)/%_coverage: $(TEST_DIR)/%.cov.o
 # Pattern rule for running individual tests (always with debug)
 test_%: $(TEST_DIR)/%_test_debug
 	@printf "\n--- Running $< (debug mode) ---\n"
-	@./$<
+	@ASAN_OPTIONS=allocator_may_return_null=1:detect_stack_use_after_return=1 \
+	 UBSAN_OPTIONS=halt_on_error=0:exitcode=1:print_stacktrace=1 \
+	 ./$<
 	@if [ $$? -ne 0 ]; then \
 		printf "\nTest $< FAILED!\n"; \
 		exit 1; \
@@ -82,7 +104,7 @@ tests: build_silent
 	@printf "Running all tests (normal mode)...\n"
 	@for test in $(TEST_SRCS:%.c=%_silent) ; do \
 		printf "\n--- Running $$test ---\n" ; \
-		./$$test ; \
+		ASAN_OPTIONS=allocator_may_return_null=1 ./$$test ; \
 		if [ $$? -ne 0 ]; then \
 			printf "\nTest $$test FAILED with exit code $$?\n"; \
 			exit_code=1; \
@@ -100,7 +122,7 @@ tests_full: build_debug
 	@printf "Running all tests (debug mode)...\n"
 	@for test in $(TEST_SRCS:%.c=%_debug) ; do \
 		printf "\n--- Running $$test ---\n" ; \
-		./$$test ; \
+		ASAN_OPTIONS=allocator_may_return_null=1 ./$$test ; \
 		if [ $$? -ne 0 ]; then \
 			printf "\nTest $$test FAILED with exit code $$?\n"; \
 			exit_code=1; \

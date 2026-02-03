@@ -76,7 +76,7 @@ jobs:
           cd tests
           FOR %%f IN (*.c) DO (
             echo --- Compiling %%f with MSVC ---
-            cl.exe /W4 /DDEBUG /I.. /Fe:%%~nf.exe %%f
+            cl.exe /W4 /WX /DDEBUG /I.. /Fe:%%~nf.exe %%f
             echo --- Running %%~nf.exe ---
             call %%~nf.exe
           )

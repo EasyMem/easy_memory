@@ -25,7 +25,7 @@
  *  SAFETY & VERIFICATION:
  *    #define EM_SAFETY_POLICY <N> // 0: CONTRACT (Design-by-Contract), 1: DEFENSIVE (Fault-Tolerant) [Default]
  *    #define DEBUG                // Enables assertions and auto-enables poisoning
- *    #define ASSERT_STAYS         // Forces assertions to remain active even in Release builds
+ *    #define EM_ASSERT_STAYS      // Forces assertions to remain active even in Release builds
  *    #define EM_ASSERT_PANIC      // Assertions call abort() (Hardened Release)
  *    #define EM_ASSERT_OPTIMIZE   // Assertions are optimization hints (Danger!)
  *    #define EM_ASSERT(cond)      // Override with custom assertion logic
@@ -68,7 +68,7 @@ typedef struct Block Block;
 typedef struct EM    EM;
 typedef struct Bump  Bump;
 
-#if defined(_MSC_VER)
+#ifdef _MSC_VER
 #include <intrin.h>
 #endif
 
@@ -82,12 +82,15 @@ typedef struct Bump  Bump;
  * 2. Pre-C11/C++11:
  *    Uses a typedef trick to create a compile-time error on failure.
 */
+#define EM_CONCAT_INTERNAL(a, b) a##b
+#define EM_CONCAT(a, b) EM_CONCAT_INTERNAL(a, b)
+
 #if (defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L) || defined(__cplusplus)
 #   include <assert.h>
 #   define EM_STATIC_ASSERT(cond, msg) static_assert(cond, #msg)
 #else
-#   define EM_STATIC_ASSERT_HELPER(cond, line) typedef char static_assertion_at_line_##line[(cond) ? 1 : -1]
-#   define EM_STATIC_ASSERT(cond, msg) EM_STATIC_ASSERT_HELPER(cond, __LINE__)
+#   define EM_STATIC_ASSERT(cond, msg) \
+        typedef char EM_CONCAT(static_assertion_at_line_, __LINE__)[(cond) ? 1 : -1]
 #endif
 
 /*
@@ -113,7 +116,7 @@ typedef struct Bump  Bump;
  * Configuration: Assertions
  * 
  * Behavior depends on defined macros:
- * 1. DEBUG or ASSERT_STAYS: 
+ * 1. DEBUG or EM_ASSERT_STAYS: 
  *    Standard C assert(). Aborts and prints file/line on failure.
  * 
  * 2. EM_ASSERT_PANIC:
@@ -129,7 +132,7 @@ typedef struct Bump  Bump;
  *    No-op. Assertions are compiled out completely. Safe and fast.
 */
 #ifndef EM_ASSERT
-#   if defined(DEBUG) || defined(ASSERT_STAYS)
+#   if defined(DEBUG) || defined(EM_ASSERT_STAYS)
 #       include <assert.h>
 #       define EM_ASSERT(cond) assert(cond)
 #   elif defined(EM_ASSERT_PANIC)
@@ -188,7 +191,7 @@ typedef struct Bump  Bump;
  *   - Philosophy: Post-conditions and invariants are treated as a contract.
  *   - Behavior: Checks are delegated to the EM_ASSERT mechanism.
  *   - Outcome: The final behavior (whether checks are compiled out, lead to a panic, 
- *     or stay in release via ASSERT_STAYS) is determined entirely by the 
+ *     or stay in release via EM_ASSERT_STAYS) is determined entirely by the 
  *     configured Assertion Strategy.
  *   - Best for: Fine-grained control over debugging and performance.
  *
@@ -484,7 +487,7 @@ EM_STATIC_ASSERT(EM_DEFAULT_ALIGNMENT <= EMMAX_ALIGNMENT, "EM_DEFAULT_ALIGNMENT 
  * Macro: Block Data Pointer
  * Calculates the pointer to the usable data area of a block.
 */
-#define block_data(block) ((void *)((char *)(block) + sizeof(Block)))
+#define block_data(block) ((void *)((uintptr_t)(block) + sizeof(Block)))
 
 /*
  * Memory block structure
@@ -673,7 +676,11 @@ static inline size_t min_exponent_of(size_t num) {
     // Use compiler built-ins if available for efficiency
     // EM_FORCE_GENERIC needed for testing fallback generic implementation
     #if (defined(__GNUC__) || defined(__clang__)) && !defined(EM_FORCE_GENERIC)
-        return __builtin_ctz(num);
+        #if UINTPTR_MAX > 0xFFFFFFFF
+            return (size_t)__builtin_ctzll((unsigned long long)num);
+        #else
+            return (size_t)__builtin_ctz((unsigned int)num);
+        #endif
     #elif defined(_MSC_VER) && !defined(EM_FORCE_GENERIC)
         unsigned long index;
         #if defined(_M_X64) || defined(_M_ARM64)
@@ -1526,24 +1533,19 @@ static inline Block *create_next_block(EM *em, Block *prev_block) {
     EM_ASSERT((em != NULL)         && "Internal Error: 'create_next_block' called on NULL easy memory");
     EM_ASSERT((prev_block != NULL) && "Internal Error: 'create_next_block' called on NULL prev_block");
     
-    Block *next_block = NULL;
-    if (is_block_within_em(em, prev_block)) {
-        next_block = next_block_unsafe(prev_block);
-        
-        // Safety check - next block already exists
-        if (is_block_in_active_part(em, next_block) && get_prev(next_block) == prev_block) return NULL;
+    if (!is_block_within_em(em, prev_block)) {
+        EM_ASSERT(false && "Internal Error: prev_block out of bounds");
+        return NULL;
     }
-    // LCOV_EXCL_START
-    else {
-        // Safety check - prev_block is out of easy memory bounds
-        EM_ASSERT(false && "Internal Error: 'create_next_block' called with prev_block out of easy memory bounds");
-    }
-    // LCOV_EXCL_STOP
 
-    next_block = create_block(next_block);
-    set_prev(next_block, prev_block);
+    Block *nb = next_block_unsafe(prev_block);
+
+    if (is_block_in_active_part(em, nb) && get_prev(nb) == prev_block) return NULL;
+
+    Block *final_block = create_block(nb);
+    set_prev(final_block, prev_block);
     
-    return next_block;
+    return final_block;
 }
 
 /*
@@ -2158,7 +2160,7 @@ static void *alloc_in_tail_full(EM *em, size_t size, size_t alignment) {
     if (minimal_needed_block_size > free_space) return NULL;
 
     // Check if we can allocate with end padding for next block
-    size_t final_needed_block_size = minimal_needed_block_size;
+    size_t final_needed_block_size;
     if (free_space - minimal_needed_block_size >= EMBLOCK_MIN_SIZE) {
         uintptr_t raw_data_end_ptr = aligned_data_ptr + size;
         uintptr_t aligned_data_end_ptr = align_up(raw_data_end_ptr + sizeof(Block), em_get_alignment(em)) - sizeof(Block);
@@ -2199,7 +2201,8 @@ static void *alloc_in_tail_full(EM *em, size_t size, size_t alignment) {
     // If there is remaining free space, create a new free block
     if (free_space != final_needed_block_size) {
         Block *new_tail = create_next_block(em, tail);
-        em_set_tail(em, new_tail);
+        if (new_tail) em_set_tail(em, new_tail);
+        else set_size(tail, free_space);
     }
 
     return (void *)aligned_data_ptr;

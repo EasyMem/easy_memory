@@ -1,4 +1,5 @@
 #define EASY_MEMORY_IMPLEMENTATION
+#define EM_NO_ATTRIBUTES
 #include "easy_memory.h"
 #include "test_utils.h"
 
@@ -9,7 +10,7 @@
  * Test complex allocation pattern
  * Imitates a real scenario of dynamic object graph management
  */
-void test_complex_allocation_pattern(void) {
+static void test_complex_allocation_pattern(void) {
     TEST_PHASE("Complex Allocation Pattern");
 
     // Create an easy memory
@@ -25,7 +26,7 @@ void test_complex_allocation_pattern(void) {
     TEST_CASE("Initial allocations");
     // Allocate objects of various sizes
     for (int i = 0; i < 50; i++) {
-        size_t size = 20 + (i * 7) % 180;
+        size_t size = (size_t)(20 + (i * 7) % 180);
         objects[allocated] = em_alloc(em, size);
         
         if (objects[allocated]) {
@@ -85,7 +86,7 @@ void test_complex_allocation_pattern(void) {
     pattern_errors = 0;
     
     for (int i = 0; i < 20; i++) {
-        size_t size = 25 + (i * 3) % 15;
+        size_t size = (size_t)(25 + (i * 3) % 15);
         void *ptr = em_alloc(em, size);
         
         if (ptr) {
@@ -124,7 +125,7 @@ void test_complex_allocation_pattern(void) {
     pattern_errors = 0;
     
     for (int i = 0; i < 10; i++) {
-        size_t size = 150 + (i * 17) % 100;
+        size_t size = (size_t)(150 + (i * 17) % 100);
         void *ptr = em_alloc(em, size);
         
         if (ptr) {
@@ -274,7 +275,7 @@ void test_complex_allocation_pattern(void) {
     em_destroy(em);
 }
 
-void test_block_merging(void) {
+static void test_block_merging(void) {
     TEST_CASE("Block Merging and Fragmentation");
 
     // Create an easy memory instance
@@ -396,7 +397,7 @@ void test_block_merging(void) {
 }
 
 // Test specific LLRB detach scenarios
-void test_llrb_detach_scenarios(void) {
+static void test_llrb_detach_scenarios(void) {
     TEST_CASE("LLRB Detach Scenarios");
 
     // Scenario: Detach Root (and empty the tree)

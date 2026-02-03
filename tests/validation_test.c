@@ -1,4 +1,5 @@
 #define EASY_MEMORY_IMPLEMENTATION
+#define EM_NO_ATTRIBUTES
 #include "easy_memory.h"
 #include "test_utils.h"
 #include <limits.h>
@@ -10,7 +11,7 @@
 #define SSIZE_MAX (SIZE_MAX / 2)
 #endif
 
-void test_min_exponent(void) {
+static void test_min_exponent(void) {
     TEST_PHASE("min_exponent_of Function");
 
     EM_ASSERT(min_exponent_of(0) == 0);
@@ -30,7 +31,7 @@ void test_min_exponent(void) {
     ASSERT(min_exponent_of(12) == 2, "Min exponent of 12 should be 2");
 }
 
-void test_invalid_allocations(void) {
+static void test_invalid_allocations(void) {
     TEST_PHASE("Invalid Allocation Scenarios");
 
     // Create an EM
@@ -42,8 +43,8 @@ void test_invalid_allocations(void) {
     ASSERT(zero_size == NULL, "Zero size allocation should return NULL");
 
     TEST_CASE("Negative size allocation");
-    void *negative_size = em_alloc(em, -1);
-    ASSERT(negative_size == NULL, "Negative size allocation should return NULL");
+    void *negative_size = em_alloc(em, (size_t)-1);
+    ASSERT(negative_size == NULL, "Negative/too large size allocation should return NULL");
 
     TEST_CASE("NULL EM allocation");
     void *null_em = em_alloc(NULL, 32);
@@ -79,7 +80,7 @@ void test_invalid_allocations(void) {
     em_destroy(em);
 }
 
-void test_invalid_em_creation(void) {
+static void test_invalid_em_creation(void) {
     TEST_PHASE("Invalid EM Creation Scenarios");
 
     TEST_CASE("Zero size EM");
@@ -87,8 +88,8 @@ void test_invalid_em_creation(void) {
     ASSERT(zero_size_em == NULL, "Zero size EM creation should fail");
 
     TEST_CASE("Negative size EM");
-    EM *negative_size_em = em_create(-1);
-    ASSERT(negative_size_em == NULL, "Negative size EM creation should fail");
+    EM *negative_size_em = em_create((size_t)-1);
+    ASSERT(negative_size_em == NULL, "Negative/too large size EM creation should fail");
 
     TEST_CASE("Very large size EM");
     #if SIZE_MAX > 0xFFFFFFFF
@@ -107,8 +108,8 @@ void test_invalid_em_creation(void) {
 
     TEST_CASE("Negative size for static EM");
     void *mem = malloc(1024);
-    EM *negative_static_em = em_create_static(mem, -1);
-    ASSERT(negative_static_em == NULL, "Static EM with negative size should fail");
+    EM *negative_static_em = em_create_static(mem, (size_t)-1);
+    ASSERT(negative_static_em == NULL, "Static EM with negative/too large size should fail");
     free(mem);
 
     TEST_CASE("Free NULL EM");
@@ -120,7 +121,7 @@ void test_invalid_em_creation(void) {
     ASSERT(true, "Reset NULL EM should not crash");
 }
 
-void test_boundary_conditions(void) {
+static void test_boundary_conditions(void) {
     TEST_PHASE("Boundary Conditions");
 
     TEST_CASE("EM size just above minimum");
@@ -170,7 +171,7 @@ void test_boundary_conditions(void) {
     em_destroy(em_frag);
 }
 
-void test_full_em_allocation(void) {
+static void test_full_em_allocation(void) {
     TEST_PHASE("Allocation in Full EM");
 
     // Create an EM with minimal valid size
@@ -206,7 +207,7 @@ void test_full_em_allocation(void) {
     em_destroy(em);
 }
 
-void test_custom_alignment_alloc(void) {
+static void test_custom_alignment_alloc(void) {
     TEST_PHASE("Custom Alignment Allocation");
 
     size_t custom_alignment = 32;
@@ -303,7 +304,7 @@ void test_custom_alignment_alloc(void) {
     em_destroy(em);
 }
 
-void test_static_em_creation(void) {
+static void test_static_em_creation(void) {
     TEST_PHASE("Static EM Creation");
 
     TEST_CASE("Valid static EM creation");
@@ -327,7 +328,7 @@ void test_static_em_creation(void) {
     free(static_memory);
 }
 
-void test_freeing_invalid_blocks(void) {
+static void test_freeing_invalid_blocks(void) {
     TEST_PHASE("Freeing Invalid Blocks");
 
     // Create an EM
@@ -338,6 +339,7 @@ void test_freeing_invalid_blocks(void) {
     struct {
         uintptr_t fake_backlink;
         int data;
+        int _padding;
     } stack_obj;
 
     stack_obj.fake_backlink = (uintptr_t)&stack_obj.data ^ 1;
@@ -375,7 +377,7 @@ void test_freeing_invalid_blocks(void) {
     em_destroy(em);
 }
 
-void test_calloc() {
+static void test_calloc(void) {
     TEST_PHASE("EM Calloc Functionality");
 
     // Create an EM
@@ -466,7 +468,7 @@ void test_calloc() {
     em_destroy(em);
 }
 
-void test_em_reset_zero(void) {
+static void test_em_reset_zero(void) {
     TEST_PHASE("EM Reset Zero");
 
     TEST_CASE("Setup and dirtying memory");
@@ -591,7 +593,7 @@ static size_t count_blocks_in_em(EM *em) {
 }
 
 
-void test_alignment_alloc(void) {
+static void test_alignment_alloc(void) {
     void *buffer = get_exact_alignment_ptr(8);
     size_t size = get_buffer_size(buffer);
 
@@ -713,7 +715,7 @@ void test_alignment_alloc(void) {
     }
 }
 
-void test_static_em_detector_coverage(void) {
+static void test_static_em_detector_coverage(void) {
     TEST_CASE("Force Magic LSB Detector coverage");
 
     size_t alignment = 64; 
@@ -733,7 +735,7 @@ void test_static_em_detector_coverage(void) {
     ASSERT((*detector_spot & 1) == 1, "Magic LSB Detector should be set");
 }
 
-void test_tail_alloc_edge_case_deterministic(void) {
+static void test_tail_alloc_edge_case_deterministic(void) {
     TEST_CASE("Tail Allocation Edge Case - Deterministic");
     char raw[512];
     void *mem = (void*)align_up((uintptr_t)raw, 64);
@@ -747,7 +749,7 @@ void test_tail_alloc_edge_case_deterministic(void) {
     ASSERT(p2 != NULL, "This should trigger the 'final_needed_block_size = free_space' branch");
 }
 
-void test_scratch_allocation_and_freeing(void) {
+static void test_scratch_allocation_and_freeing(void) {
     TEST_PHASE("Scratch EM Allocation and Freeing");
 
     TEST_CASE("Create EM and allocate scratch EM");
@@ -812,7 +814,7 @@ void test_scratch_allocation_and_freeing(void) {
     em_destroy(em);
 }
 
-void test_invalid_scratch_allocation(void) {
+static void test_invalid_scratch_allocation(void) {
     TEST_PHASE("Invalid Scratch Allocation Scenarios");
 
     // Create an EM
@@ -823,8 +825,8 @@ void test_invalid_scratch_allocation(void) {
     void *zero_size = em_alloc_scratch(em, 0);
     ASSERT(zero_size == NULL, "Zero size scratch allocation should return NULL");
 
-    TEST_CASE("Negative size scratch allocation");
-    void *negative_size = em_alloc_scratch(em, -1);
+    TEST_CASE("Negative/too large size scratch allocation");
+    void *negative_size = em_alloc_scratch(em, (size_t)-1);
     ASSERT(negative_size == NULL, "Negative size scratch allocation should return NULL");
 
     TEST_CASE("NULL EM scratch allocation");
@@ -846,7 +848,7 @@ void test_invalid_scratch_allocation(void) {
     em_destroy(em);
 }
 
-void test_scratch_em_creation_and_freeing(void) {
+static void test_scratch_em_creation_and_freeing(void) {
     TEST_PHASE("Scratch EM Creation and Freeing");
 
     TEST_CASE("Create scratch EM from valid EM");
@@ -879,8 +881,8 @@ void test_scratch_em_creation_and_freeing(void) {
     EM *zero_size_scratch_em = em_create_scratch(em, 0);
     ASSERT(zero_size_scratch_em == NULL, "Scratch EM creation with zero size should fail");
 
-    TEST_CASE("Attempt to create scratch EM with negative size");
-    EM *negative_size_scratch_em = em_create_scratch(em, -1);
+    TEST_CASE("Attempt to create scratch EM with negative/too large size");
+    EM *negative_size_scratch_em = em_create_scratch(em, (size_t)-1);
     ASSERT(negative_size_scratch_em == NULL, "Scratch EM creation with negative size should fail");
 
     TEST_CASE("Attempt to create scratch EM with custom alignment");

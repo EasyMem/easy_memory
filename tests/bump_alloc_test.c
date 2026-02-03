@@ -1,8 +1,9 @@
 #define EASY_MEMORY_IMPLEMENTATION
+#define EM_NO_ATTRIBUTES
 #include "easy_memory.h"
 #include "test_utils.h"
 
-void test_bump_creation() {
+static void test_bump_creation(void) {
     TEST_CASE("Bump Allocator Creation");
 
     TEST_PHASE("Create Bump Allocator within EM");
@@ -63,7 +64,7 @@ void test_bump_creation() {
     em_destroy(em);
 }
 
-void test_bump_allocation() {
+static void test_bump_allocation(void) {
     TEST_CASE("Bump Allocator Allocation");
 
     size_t em_size = 2048;
@@ -121,9 +122,9 @@ void test_bump_allocation() {
     ASSERT(ptr7 == NULL, "Aligned allocation with zero size should fail");
 
     size_t alloc_size8 = 100;
-    size_t alignment8 = -1;
+    size_t alignment8 = (size_t)-1;
     void *ptr8 = em_bump_alloc_aligned(bump, alloc_size8, alignment8);
-    ASSERT(ptr8 == NULL, "Aligned allocation with negative alignment should fail");
+    ASSERT(ptr8 == NULL, "Aligned allocation with over the top alignment should fail");
 
     size_t alloc_size9 = bump_size;
     size_t alignment9 = 16;
@@ -140,7 +141,7 @@ void test_bump_allocation() {
 }
 
 #define NUM_ALLOCS 100
-void test_bump_hard_usage() {
+static void test_bump_hard_usage(void) {
     TEST_PHASE("Bump Integrity / Hard Usage");
     EM *em = em_create(5000);
     Bump *bump = em_create_bump(em, 4096);
@@ -148,7 +149,7 @@ void test_bump_hard_usage() {
     size_t sizes[NUM_ALLOCS];
     
     for(int i=0; i<NUM_ALLOCS; i++) {
-        sizes[i] = 10 + (i % 20);
+        sizes[i] = (size_t)(10 + (i % 20));
         ptrs[i] = em_bump_alloc(bump, sizes[i]);
         
         ASSERT_QUIET(ptrs[i] != NULL, "Stress test allocation");
@@ -165,9 +166,9 @@ void test_bump_hard_usage() {
     em_destroy(em);
 }
 
-#define BLOCK_FROM_DATA(ptr) ((Block *)((char *)(ptr) - sizeof(Block)))
+#define BLOCK_FROM_DATA(ptr) ((Block *)((uintptr_t)(ptr) - sizeof(Block)))
 
-void test_bump_trim(void) {
+static void test_bump_trim(void) {
     TEST_CASE("Bump Trim Scenarios");
 
     // ---------------------------------------------------------

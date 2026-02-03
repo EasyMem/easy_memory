@@ -1,4 +1,5 @@
 #define EASY_MEMORY_IMPLEMENTATION
+#define EM_NO_ATTRIBUTES
 #include "easy_memory.h"
 #include "test_utils.h"
 
@@ -7,7 +8,7 @@
 #define INITIAL_BLOCKS (10)
 #define ADDITIONAL_BLOCKS (5)
 
-void test_same_size_allocation(void) {
+static void test_same_size_allocation(void) {
     TEST_CASE("Same Size Blocks Allocation Pattern");
 
     // Create an easy memory instance

@@ -259,7 +259,7 @@ Determines how the library handles internal invariant violations.
 | :--- | :--- | :--- |
 | **(Default)** | No-op | Assertions are compiled out. Safe for release. |
 | `DEBUG` | Calls `assert()` | Standard C behavior. Aborts with file/line information. |
-| `ASSERT_STAYS` | Calls `assert()` | **Forces assertions to remain active** even in Release builds. |
+| `EM_ASSERT_STAYS` | Calls `assert()` | **Forces assertions to remain active** even in Release builds. |
 | `EM_ASSERT_PANIC` | Calls `abort()` | Hardened release. Prevents exploitability on heap corruption without leaking debug info. |
 | `EM_ASSERT_OPTIMIZE`| `__builtin_unreachable()` | **DANGER**. Uses assertions as compiler optimization hints. UB if condition is false. |
 | `EM_ASSERT(cond)` | **Custom** | Define this macro to implement custom error handling (e.g., logging, infinite loop, hardware reset). Overrides all other assertion flags. |

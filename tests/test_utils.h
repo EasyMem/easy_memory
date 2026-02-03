@@ -25,7 +25,7 @@ static int tests_failed = 0;
 /*
  * Functions prototypes for testing
 */
-void print_test_summary();
+void print_test_summary(void);
 bool pointers_overlap(void *p1, size_t size1, void *p2, size_t size2);
 void check_pointers_integrity(void **pointers, size_t *sizes, int count);
 void fill_memory_pattern(void *ptr, size_t size, int pattern);
@@ -77,7 +77,7 @@ bool verify_memory_pattern(void *ptr, size_t size, int pattern);
 /* 
  * Function for printing test results
 */
-void print_test_summary() {
+void print_test_summary(void) {
     printf("\n");
     printf(ANSI_COLOR_BLUE "=== Test Results ===\n" ANSI_COLOR_RESET);
     printf("Total tests: %d\n", tests_total);
@@ -133,7 +133,7 @@ void fill_memory_pattern(void *ptr, size_t size, int pattern) {
  * Checking the preservation of the pattern in memory
 */
 bool verify_memory_pattern(void *ptr, size_t size, int pattern) {
-    unsigned char expected = pattern & 0xFF;
+    unsigned char expected = (unsigned char)(pattern & 0xFF);
     unsigned char *bytes = (unsigned char*)ptr;
     
     for (size_t i = 0; i < size; i++) {

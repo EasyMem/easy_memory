@@ -38,6 +38,10 @@
 ## Key Features
 
 *   **Adaptive Performance:** Optimized for real-world usage patterns. Sequential allocations and LIFO deallocations (stack-like behavior) are detected and handled in **O(1)** time via the tail block. Complex, mixed-order patterns gracefully fallback to the efficient **O(log n)** tree search.
+*   **Compiler Agnostic & Optimization Resilient:** Verified to work correctly across all optimization levels:
+    *   **GCC/Clang:** `-O1` through `-O3`, `-Os`, and `-Oz`.
+    *   **MSVC:** `/O1`, `/O2`, and `/Ox`.
+    *   Strict compliance with **Strict Aliasing** rules ensures that aggressive compiler optimizations never break memory logic.
 *   **Triple-Key LLRB Tree:** Free blocks are sorted by **Size**, **Alignment Quality** (CTZ), and **Address**. This reduces fragmentation by prioritizing blocks that *naturally* satisfy alignment requirements before splitting new memory.
 *   **Flexible Alignment:** Supports per-allocation alignment requests (powers of two, up to **512 bytes**). Ideal for SIMD vectors and cache-line aligned buffers.
 *   **Low Overhead:** Metadata consumes only **4 machine words** per block (16 bytes on 32-bit, 32 bytes on 64-bit).
@@ -59,6 +63,22 @@
     *   **Self-Documenting:** The codebase features encyclopedic comments explaining the *physics* and *rationale* behind every architectural decision.
     *   **Visual Debugging:** Optional `print_fancy` function provides detailed, colorized visualizations of the memory layout.
 
+## Rigorous Validation
+
+The system is subjected to exhaustive verification across diverse environments and configurations:
+
+*   **Sanitizer Suite:** Verified with **ASan** (Address), **UBSan** (Undefined Behavior), and **LSan** (Leak) across multiple architectures to ensure memory integrity and zero leaks.
+*   **Valgrind Memcheck:** **0 errors from 0 contexts**. Clean diagnostic logs ensure that library internals do not interfere with application-level debugging.
+*   **Optimization Resilient:** Proven stability across aggressive compiler optimization levels:
+    *   **GCC/Clang:** `-O1`, `-O2`, `-O3`, `-Os`, and `-Oz`.
+    *   **MSVC:** `/O1`, `/O2`, and `/Ox`.
+    *   Full compliance with **Strict Aliasing** rules guaranteed.
+*   **Pedantic Compilation:** Strictly enforced "Warnings-as-Errors" policy (`-Werror`) using an extensive flag set:
+    *   **Safety & Alignment:** `-Wshadow`, `-Wconversion`, `-Wundef`, `-Wstrict-aliasing=2`, `-Wcast-align`, `-Wpadded`.
+    *   **Portability:** `-Wint-to-pointer-cast`, `-Wpointer-to-int-cast`, `-Wdouble-promotion`, `-Wpointer-arith`.
+    *   **Code Integrity:** `-Wmissing-prototypes`, `-Wstrict-prototypes`, `-Wmissing-declarations`.
+*   **Static Analysis:** Continuous monitoring via **MSVC Static Analysis** (x64/x86), **Clang-Tidy**, and **CodeFactor** (Grade A+).
+*   **Platform Coverage:** Verified compatibility with **Windows (MSVC & MinGW)**, **Linux**, and **macOS**.
 
 ## Architecture
 
@@ -332,13 +352,13 @@ The library is continuously integrated and tested across a matrix of OSs and Arc
 | MSVC        | ![MSVC Status](https://img.shields.io/github/actions/workflow/status/EasyMem/easy_memory/ci.yml?job=windows-latest%20%7C%20x86_64%20%7C%20gcc&label=msvc&logo=visualstudio&logoColor=white)     |
 
 ### By Architecture
-| Architecture | Endianness | Status |
-| :--- | :--- | :--- |
-| `x86_64` | Little | ![x86_64 Status](https://img.shields.io/github/actions/workflow/status/EasyMem/easy_memory/ci.yml?branch=main&job=build-and-test-x86_64&label=x86_64&logo=intel&logoColor=white) |
-| `x86_32` | Little | ![x86_32 Status](https://img.shields.io/github/actions/workflow/status/EasyMem/easy_memory/ci.yml?branch=main&job=build-and-test-32bit&label=x86_32&logo=intel&logoColor=white) |
-| `AArch64` | Little | ![ARM64 Modern Status](https://img.shields.io/github/actions/workflow/status/EasyMem/easy_memory/ci.yml?branch=main&job=build-and-test-arm64-modern&label=aarch64&logo=arm&logoColor=white) |
-| `ARMv7`  | Little     | ![ARM32 Status](https://img.shields.io/github/actions/workflow/status/EasyMem/easy_memory/ci.yml?job=Ubuntu%20%7C%20ARM32%20(armv7)%20%7C%20GCC&label=armv7&logo=arm&logoColor=white)                                        |
-| `s390x` | **Big** | ![Big Endian Status](https://img.shields.io/github/actions/workflow/status/EasyMem/easy_memory/ci.yml?branch=main&job=build-and-test-big-endian&label=s390x&logo=ibm&logoColor=white) |
+| Architecture | Endianness | OS / Environment | Status |
+| :--- | :--- | :--- | :--- |
+| `x86_64`  | Little  | Windows / Linux / macOS | ![x86_64 Status](https://img.shields.io/github/actions/workflow/status/EasyMem/easy_memory/ci.yml?branch=main&job=build-and-test-x86_64&label=x86_64&logo=intel&logoColor=white) |
+| `x86_32`  | Little  | Windows / Linux | ![x86_32 Status](https://img.shields.io/github/actions/workflow/status/EasyMem/easy_memory/ci.yml?branch=main&job=build-and-test-32bit&label=x86_32&logo=intel&logoColor=white) |
+| `AArch64` | Little  | Linux (Modern & Strict)  | ![ARM64 Modern Status](https://img.shields.io/github/actions/workflow/status/EasyMem/easy_memory/ci.yml?branch=main&job=build-and-test-arm64-modern&label=aarch64&logo=arm&logoColor=white) |
+| `ARMv7`   | Little  | Linux | ![ARM32 Status](https://img.shields.io/github/actions/workflow/status/EasyMem/easy_memory/ci.yml?job=Ubuntu%20%7C%20ARM32%20(armv7)%20%7C%20GCC&label=armv7&logo=arm&logoColor=white) |
+| `s390x`   | **Big** | Linux | ![Big Endian Status](https://img.shields.io/github/actions/workflow/status/EasyMem/easy_memory/ci.yml?branch=main&job=build-and-test-big-endian&label=s390x&logo=ibm&logoColor=white) |
 
 ### C Standards Compliance
 | Standard | Status |

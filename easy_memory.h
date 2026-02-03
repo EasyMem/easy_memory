@@ -484,6 +484,12 @@ EM_STATIC_ASSERT(EM_DEFAULT_ALIGNMENT <= EMMAX_ALIGNMENT, "EM_DEFAULT_ALIGNMENT 
 #define EMMIN_SIZE       (sizeof(EM) + EMBLOCK_MIN_SIZE)
 
 /*
+ * Constant: Maximum EM Size
+ * The maximum size allowed for an EM instance to prevent overflow issues.
+*/
+#define EMMAX_SIZE (SIZE_MAX >> 3)
+
+/*
  * Macro: Block Data Pointer
  * Calculates the pointer to the usable data area of a block.
 */
@@ -772,8 +778,8 @@ static inline size_t get_size(const Block *block) {
  *  -- 64-bit system: [0] U [EM_MIN_BUFFER_SIZE ... 2 EiB]   (2^61 bytes)
  */
 static inline void set_size(Block *block, size_t size) {
-    EM_ASSERT((block != NULL)      && "Internal Error: 'set_size' called on NULL block");
-    EM_ASSERT((size <= EMSIZE_MASK)  && "Internal Error: 'set_size' called on too big size");
+    EM_ASSERT((block != NULL)        && "Internal Error: 'set_size' called on NULL block");
+    EM_ASSERT((size <= EMMAX_SIZE)   && "Internal Error: 'set_size' called on too big size");
 
     /*
      * Why size limit?
@@ -1280,9 +1286,9 @@ static inline size_t em_get_capacity(const EM *em) {
  * Updates the capacity information in the easy memory's as.block_representation field
  */
 static inline void em_set_capacity(EM *em, size_t size) {
-    EM_ASSERT((em != NULL)                            && "Internal Error: 'em_set_capacity' called on NULL easy memory");
+    EM_ASSERT((em != NULL)                              && "Internal Error: 'em_set_capacity' called on NULL easy memory");
     EM_ASSERT(((size == 0 || size >= EMBLOCK_MIN_SIZE)) && "Internal Error: 'em_set_capacity' called on too small size");
-    EM_ASSERT((size <= EMSIZE_MASK)                     && "Internal Error: 'em_set_capacity' called on too big size");
+    EM_ASSERT((size <= EMMAX_SIZE)                      && "Internal Error: 'em_set_capacity' called on too big size");
 
     /*
      * What is happening here?
@@ -1719,11 +1725,11 @@ static Block *insert_block(Block *h, Block *new_block) {
  *   Performance: O(log n)
  */
 static Block *find_best_fit(Block *root, size_t size, size_t alignment, Block **out_parent) {
-    EM_ASSERT((size > 0)          && "Internal Error: 'find_best_fit' called on too small size");
-    EM_ASSERT((size <= EMSIZE_MASK) && "Internal Error: 'find_best_fit' called on too big size");
+    EM_ASSERT((size > 0)                           && "Internal Error: 'find_best_fit' called on too small size");
+    EM_ASSERT((size <= EMMAX_SIZE)                 && "Internal Error: 'find_best_fit' called on too big size");
     EM_ASSERT(((alignment & (alignment - 1)) == 0) && "Internal Error: 'find_best_fit' called on invalid alignment");
-    EM_ASSERT((alignment >= EMMIN_ALIGNMENT)         && "Internal Error: 'find_best_fit' called on too small alignment");
-    EM_ASSERT((alignment <= EMMAX_ALIGNMENT)         && "Internal Error: 'find_best_fit' called on too big alignment");
+    EM_ASSERT((alignment >= EMMIN_ALIGNMENT)       && "Internal Error: 'find_best_fit' called on too small alignment");
+    EM_ASSERT((alignment <= EMMAX_ALIGNMENT)       && "Internal Error: 'find_best_fit' called on too big alignment");
     
     if (root == NULL) return NULL;
 
@@ -1839,11 +1845,11 @@ static void detach_block_fast(Block **tree_root, Block *target, Block *parent) {
  * Returns the detached block or NULL if no suitable block was found.
  */
 static Block *find_and_detach_block(Block **tree_root, size_t size, size_t alignment) {
-    EM_ASSERT((size > 0)          && "Internal Error: 'find_and_detach_block' called on too small size");
-    EM_ASSERT((size <= EMSIZE_MASK) && "Internal Error: 'find_and_detach_block' called on too big size");
+    EM_ASSERT((size > 0)                           && "Internal Error: 'find_and_detach_block' called on too small size");
+    EM_ASSERT((size <= EMMAX_SIZE)                 && "Internal Error: 'find_and_detach_block' called on too big size");
     EM_ASSERT(((alignment & (alignment - 1)) == 0) && "Internal Error: 'find_and_detach_block' called on invalid alignment");
-    EM_ASSERT((alignment >= EMMIN_ALIGNMENT)         && "Internal Error: 'find_and_detach_block' called on too small alignment");
-    EM_ASSERT((alignment <= EMMAX_ALIGNMENT)         && "Internal Error: 'find_and_detach_block' called on too big alignment");
+    EM_ASSERT((alignment >= EMMIN_ALIGNMENT)       && "Internal Error: 'find_and_detach_block' called on too small alignment");
+    EM_ASSERT((alignment <= EMMAX_ALIGNMENT)       && "Internal Error: 'find_and_detach_block' called on too big alignment");
     
     if (*tree_root == NULL) return NULL;
 
@@ -2063,7 +2069,7 @@ static void em_free_block_full(EM *em, Block *block) {
 static void *alloc_in_free_blocks(EM *em, size_t size, size_t alignment) {
     EM_ASSERT((em != NULL)                         && "Internal Error: 'alloc_in_free_blocks' called on NULL easy memory");
     EM_ASSERT((size > 0)                           && "Internal Error: 'alloc_in_free_blocks' called on too small size");
-    EM_ASSERT((size <= EMSIZE_MASK)                && "Internal Error: 'alloc_in_free_blocks' called on too big size");
+    EM_ASSERT((size <= EMMAX_SIZE)                 && "Internal Error: 'alloc_in_free_blocks' called on too big size");
     EM_ASSERT(((alignment & (alignment - 1)) == 0) && "Internal Error: 'alloc_in_free_blocks' called on invalid alignment");
     EM_ASSERT((alignment >= EMMIN_ALIGNMENT)       && "Internal Error: 'alloc_in_free_blocks' called on too small alignment");
     EM_ASSERT((alignment <= EMMAX_ALIGNMENT)       && "Internal Error: 'alloc_in_free_blocks' called on too big alignment");
@@ -2105,7 +2111,7 @@ static void *alloc_in_free_blocks(EM *em, size_t size, size_t alignment) {
 static void *alloc_in_tail_full(EM *em, size_t size, size_t alignment) {
     EM_ASSERT((em != NULL)                           && "Internal Error: 'alloc_in_tail_full' called on NULL easy memory");
     EM_ASSERT((size > 0)                             && "Internal Error: 'alloc_in_tail_full' called on too small size");
-    EM_ASSERT((size <= EMSIZE_MASK)                  && "Internal Error: 'alloc_in_tail_full' called on too big size");
+    EM_ASSERT((size <= EMMAX_SIZE)                   && "Internal Error: 'alloc_in_tail_full' called on too big size");
     EM_ASSERT(((alignment & (alignment - 1)) == 0)   && "Internal Error: 'alloc_in_tail_full' called on invalid alignment");
     EM_ASSERT((alignment >= EMMIN_ALIGNMENT)         && "Internal Error: 'alloc_in_tail_full' called on too small alignment");
     EM_ASSERT((alignment <= EMMAX_ALIGNMENT)         && "Internal Error: 'alloc_in_tail_full' called on too big alignment");
@@ -2290,7 +2296,7 @@ EMDEF void em_free(void *data) {
     #if EM_SAFETY_POLICY == EM_POLICY_DEFENSIVE
         EM_ASSERT((block != NULL) && "Internal Error: 'em_free' detected NULL block");
         
-        EM_CHECK_V((get_size(block) <= EMSIZE_MASK), "Internal Error: 'em_free' detected block with invalid size");
+        EM_CHECK_V((get_size(block) <= EMMAX_SIZE), "Internal Error: 'em_free' detected block with invalid size");
         EM_CHECK_V((is_valid_magic(block, data)),    "Internal Error: 'em_free' detected block with invalid magic");
         EM *em = get_em(block);
         
@@ -2643,7 +2649,7 @@ EMDEF void *em_calloc(EM *EM_RESTRICT em, size_t nmemb, size_t size) {
 EMDEF EM *em_create_static_aligned(void *EM_RESTRICT memory, size_t size, size_t alignment) {
     EM_CHECK((memory != NULL)                    , NULL, "Internal Error: 'em_create_static_aligned' called with NULL memory");
     EM_CHECK((size >= EMMIN_SIZE)                , NULL, "Internal Error: 'em_create_static_aligned' called with too small size");
-    EM_CHECK((size <= EMSIZE_MASK)               , NULL, "Internal Error: 'em_create_static_aligned' called with too big size");
+    EM_CHECK((size <= EMMAX_SIZE)                , NULL, "Internal Error: 'em_create_static_aligned' called with too big size");
     EM_CHECK(((alignment & (alignment - 1)) == 0), NULL, "Internal Error: 'em_create_static_aligned' called with invalid alignment");
     EM_CHECK((alignment >= EMMIN_ALIGNMENT)      , NULL, "Internal Error: 'em_create_static_aligned' called with too small alignment");
     EM_CHECK((alignment <= EMMAX_ALIGNMENT)      , NULL, "Internal Error: 'em_create_static_aligned' called with too big alignment");
@@ -2794,7 +2800,7 @@ EMDEF EM *em_create_aligned(size_t size, size_t alignment) {
     size_t overhead = sizeof(EM) + alignment;
     EM_CHECK((size <= SIZE_MAX - overhead)       , NULL, "Internal Error: 'em_create_aligned' size overflow");
     EM_CHECK((size >= EMBLOCK_MIN_SIZE)          , NULL, "Internal Error: 'em_create_aligned' called with too small size");
-    EM_CHECK((size <= EMSIZE_MASK)               , NULL, "Internal Error: 'em_create_aligned' called with too big size");
+    EM_CHECK((size <= EMMAX_SIZE)                , NULL, "Internal Error: 'em_create_aligned' called with too big size");
     EM_CHECK(((alignment & (alignment - 1)) == 0), NULL, "Internal Error: 'em_create_aligned' called with invalid alignment");
     EM_CHECK((alignment >= EMMIN_ALIGNMENT)      , NULL, "Internal Error: 'em_create_aligned' called with too small alignment");
     EM_CHECK((alignment <= EMMAX_ALIGNMENT)      , NULL, "Internal Error: 'em_create_aligned' called with too big alignment");
@@ -3006,7 +3012,7 @@ EMDEF void em_reset_zero(EM *EM_RESTRICT em) {
 EMDEF EM *em_create_nested_aligned(EM *EM_RESTRICT parent_em, size_t size, size_t alignment) {
     EM_CHECK((parent_em != NULL)                 , NULL, "Internal Error: 'em_create_nested_aligned' called with NULL parent easy memory");
     EM_CHECK((size >= EMBLOCK_MIN_SIZE)          , NULL, "Internal Error: 'em_create_nested_aligned' called with too small size");
-    EM_CHECK((size <= EMSIZE_MASK)               , NULL, "Internal Error: 'em_create_nested_aligned' called with too big size");
+    EM_CHECK((size <= EMMAX_SIZE)                , NULL, "Internal Error: 'em_create_nested_aligned' called with too big size");
     EM_CHECK(((alignment & (alignment - 1)) == 0), NULL, "Internal Error: 'em_create_nested_aligned' called with invalid alignment");
     EM_CHECK((alignment >= EMMIN_ALIGNMENT)      , NULL, "Internal Error: 'em_create_nested_aligned' called with too small alignment");
     EM_CHECK((alignment <= EMMAX_ALIGNMENT)      , NULL, "Internal Error: 'em_create_nested_aligned' called with too big alignment");
@@ -3134,7 +3140,7 @@ EMDEF EM *em_create_scratch_aligned(EM *EM_RESTRICT parent_em, size_t size, size
     EM_CHECK((parent_em != NULL)                 , NULL, "Internal Error: 'em_create_scratch_aligned' called with NULL parent easy memory");
     EM_CHECK((!em_get_has_scratch(parent_em))    , NULL, "Internal Error: 'em_create_scratch_aligned' called when scratch already allocated in parent");
     EM_CHECK((size >= EMBLOCK_MIN_SIZE)          , NULL, "Internal Error: 'em_create_scratch_aligned' called with too small size");
-    EM_CHECK((size <= EMSIZE_MASK)               , NULL, "Internal Error: 'em_create_scratch_aligned' called with too big size");
+    EM_CHECK((size <= EMMAX_SIZE)                , NULL, "Internal Error: 'em_create_scratch_aligned' called with too big size");
     EM_CHECK(((alignment & (alignment - 1)) == 0), NULL, "Internal Error: 'em_create_scratch_aligned' called with invalid alignment");
     EM_CHECK((alignment >= EMMIN_ALIGNMENT)      , NULL, "Internal Error: 'em_create_scratch_aligned' called with too small alignment");
     EM_CHECK((alignment <= EMMAX_ALIGNMENT)      , NULL, "Internal Error: 'em_create_scratch_aligned' called with too big alignment");
@@ -3246,7 +3252,7 @@ EMDEF EM *em_create_scratch(EM *EM_RESTRICT parent_em, size_t size) {
  */
 EMDEF Bump *em_create_bump(EM *EM_RESTRICT parent_em, size_t size) {
     EM_CHECK((parent_em != NULL),          NULL, "Internal Error: 'em_create_bump' called with NULL parent easy memory");
-    EM_CHECK((size <= EMSIZE_MASK),        NULL, "Internal Error: 'em_create_bump' called with too big size");
+    EM_CHECK((size <= EMMAX_SIZE),         NULL, "Internal Error: 'em_create_bump' called with too big size");
     EM_CHECK((size >= EM_MIN_BUFFER_SIZE), NULL, "Internal Error: 'em_create_bump' called with too small size");
 
     void *data = em_alloc(parent_em, size);  // Allocate memory from the parent easy memory

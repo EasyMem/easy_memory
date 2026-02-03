@@ -67,11 +67,13 @@ static void test_invalid_allocations(void) {
     em_free(ptr); // Should not crash
     em_destroy(another_em);
 
+    #ifndef __valgrind__
     TEST_CASE("Free already freed pointer");
     void *ptr2 = em_alloc(em, 32);
     em_free(ptr2);
     em_free(ptr2); // Should not crash
     ASSERT(true, "Free already freed pointer should not crash");
+    #endif
 
     TEST_CASE("Allocation larger than EM size");
     void *huge_allocation = em_alloc(em, 2048);

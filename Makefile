@@ -25,7 +25,7 @@ endif
 
 CC ?= clang
 STD_C ?= c99
-CFLAGS = -Werror -Wall -Wextra \
+BASE_CFLAGS = -Werror -Wall -Wextra \
 	     -Wshadow \
 		 -Wconversion -Wsign-conversion \
 		 -Wundef \
@@ -45,6 +45,7 @@ CFLAGS = -Werror -Wall -Wextra \
 		 -fno-omit-frame-pointer \
 		 -fno-sanitize-recover=all \
 		 -I.
+CFLAGS = $(BASE_CFLAGS) $(EXTRA_CFLAGS)
 DEBUG_FLAGS = -DDEBUG # Debug flag
 COV_FLAGS = -O0 -fprofile-arcs -ftest-coverage # Coverage flags
 LDFLAGS_COV = -lgcov # Linker flag for coverage

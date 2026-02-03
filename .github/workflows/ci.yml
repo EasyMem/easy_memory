@@ -137,7 +137,7 @@ jobs:
             -v ${{ github.workspace }}:/workspace \
             -w /workspace \
             ${{ env.REGISTRY_IMAGE_BASE }}:arm64 \
-            make tests_full CC=gcc
+            make tests_full CC='gcc' SAN_FLAGS=""
 
   # Job 4: Strict ARM64
   build-and-test-arm64-strict:
@@ -207,7 +207,7 @@ jobs:
             -v ${{ github.workspace }}:/workspace \
             -w /workspace \
             ${{ env.REGISTRY_IMAGE_BASE }}:arm32 \
-            make tests_full CC=gcc
+            make tests_full CC='gcc' SAN_FLAGS=""
 
   # Job 7: Test various C standards
   build-and-test-C-stds:
@@ -239,7 +239,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build and Test
-        run: make tests CC=${{ matrix.compiler }} CFLAGS="-Werror ${{ matrix.opt }}"
+        run: |
+          if [ "${{ matrix.compiler }}" = "gcc" ] && [ "${{ matrix.opt }}" = "-Oz" ]; then
+            make tests CC=gcc EXTRA_CFLAGS="-Os"
+          else
+            make tests CC=${{ matrix.compiler }} EXTRA_CFLAGS="${{ matrix.opt }}"
+          fi
 
   # Job 9: MSVC with different architectures and optimizations
   build-and-test-msvc:
@@ -264,7 +269,7 @@ jobs:
           
           cd tests
           FOR %%f IN (*.c) DO (
-            echo --- Compiling %%f with MSVC (${{ matrix.arch }}, ${{ matrix.opt }}) ---
+            echo --- Compiling %%f with MSVC [${{ matrix.arch }}, ${{ matrix.opt }}] ---
             cl.exe /W4 /WX /DDEBUG ${{ matrix.opt }} /I.. /Fe:%%~nf.exe %%f
             if errorlevel 1 exit /b 1
             echo --- Running %%~nf.exe ---

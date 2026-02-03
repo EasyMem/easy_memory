@@ -298,9 +298,12 @@ static void test_custom_alignment_alloc(void) {
 
     em_free(s);
 
-    ASSERT(s->next == (void *)(uintptr_t)0xDDDDDDDD || 
-        s->next == (void *)(uintptr_t)0xDDDDDDDDDDDDDDDD, 
-        "Pointer should be poisoned to obviously invalid address");
+    uintptr_t expected_poison = (uintptr_t)0xDDDDDDDD;
+    #if UINTPTR_MAX > 0xFFFFFFFF
+    expected_poison = (expected_poison << 32) | (uintptr_t)0xDDDDDDDD;
+    #endif
+
+    ASSERT((uintptr_t)s->next == expected_poison, "Pointer should be poisoned");
     #endif
 
     em_destroy(em);

@@ -2,11 +2,14 @@
 
 
 UNAME_S := $(shell uname -s)
+UNAME_M := $(shell uname -m)
 
 SAN_FLAGS = -fsanitize=address,undefined
 
 ifeq ($(UNAME_S), Linux)
-    SAN_FLAGS += -fsanitize=leak
+	ifeq ($(UNAME_M), x86_64)
+        SAN_FLAGS += -fsanitize=leak
+    endif
 endif
 
 ifneq (,$(filter MINGW% MSYS%,$(UNAME_S)))
@@ -103,12 +106,12 @@ build_debug: $(TEST_SRCS:%.c=%_debug)
 build_coverage: $(TEST_COV_BINS)
 
 # Memory leak check using valgrind
-valgrind:
+valgrind: clean
 	@printf "Running valgrind memory check on all tests...\n"
 	@$(MAKE) build_silent SAN_FLAGS=""
 	@for test in $(TEST_SRCS:%.c=%_silent) ; do \
 		printf "\n--- Checking $$test ---\n" ; \
-		valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes ./$$test ; \
+		valgrind --error-exitcode=1 --leak-check=full --show-leak-kinds=all --track-origins=yes ./$$test ; \
 	done
 	@printf "\nAll memory checks completed.\n"
 

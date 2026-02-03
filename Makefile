@@ -7,10 +7,15 @@ UNAME_M := $(shell uname -m)
 ASAN_OPTS = allocator_may_return_null=1:detect_stack_use_after_return=1
 SAN_FLAGS = -fsanitize=address,undefined
 
+ASAN_OPTS = allocator_may_return_null=1:detect_stack_use_after_return=1
+LSAN_RUN_FIX = 
+
 ifeq ($(UNAME_S), Linux)
-	ifeq ($(UNAME_M), x86_64)
+    ifeq ($(UNAME_M), x86_64)
         SAN_FLAGS += -fsanitize=leak
-		ASAN_OPTS := $(ASAN_OPTS):detect_leaks=0
+        ASAN_OPTS := $(ASAN_OPTS):detect_leaks=1
+    else
+        LSAN_RUN_FIX = ASAN_OPTIONS="$(ASAN_OPTS):detect_leaks=0" LSAN_OPTIONS="detect_leaks=0"
     endif
 endif
 
@@ -46,6 +51,7 @@ LDFLAGS_COV = -lgcov # Linker flag for coverage
 
 export UBSAN_OPTIONS=halt_on_error=0:exitcode=1:print_stacktrace=1
 export ASAN_OPTIONS=$(ASAN_OPTS)
+export LSAN_OPTIONS=detect_leaks=0
 
 TEST_DIR = tests
 TEST_SRCS = $(wildcard $(TEST_DIR)/*.c)
@@ -110,7 +116,7 @@ build_coverage: $(TEST_COV_BINS)
 # Memory leak check using valgrind
 valgrind: clean
 	@printf "Running valgrind memory check on all tests...\n"
-	@$(MAKE) build_silent SAN_FLAGS=""
+	@$(MAKE) build_silent SAN_FLAGS="" CFLAGS="$(CFLAGS) -D__valgrind__"
 	@for test in $(TEST_SRCS:%.c=%_silent) ; do \
 		printf "\n--- Checking $$test ---\n" ; \
 		valgrind --error-exitcode=1 --leak-check=full --show-leak-kinds=all --track-origins=yes ./$$test ; \
@@ -122,7 +128,7 @@ tests: build_silent
 	@printf "Running all tests (normal mode)...\n"
 	@for test in $(TEST_SRCS:%.c=%_silent) ; do \
 		printf "\n--- Running $$test ---\n" ; \
-		./$$test ; \
+		$(LSAN_RUN_FIX) ./$$test ; \
 		if [ $$? -ne 0 ]; then \
 			printf "\nTest $$test FAILED with exit code $$?\n"; \
 			exit_code=1; \
@@ -140,7 +146,7 @@ tests_full: build_debug
 	@printf "Running all tests (debug mode)...\n"
 	@for test in $(TEST_SRCS:%.c=%_debug) ; do \
 		printf "\n--- Running $$test ---\n" ; \
-		./$$test ; \
+		$(LSAN_RUN_FIX) ./$$test ; \
 		if [ $$? -ne 0 ]; then \
 			printf "\nTest $$test FAILED with exit code $$?\n"; \
 			exit_code=1; \

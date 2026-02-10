@@ -641,6 +641,9 @@ EMDEF void em_free(void *data);
 EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED
 Bump *em_bump_create(EM *EM_RESTRICT em, size_t size);
 
+EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED
+Bump *em_bump_create_scratch(EM *EM_RESTRICT parent_em, size_t size);
+
 EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED EM_ATTR_ALLOC_SIZE(2, size)
 void *em_bump_alloc(Bump *EM_RESTRICT bump, size_t size);
 
@@ -3223,7 +3226,7 @@ EMDEF EM *em_create_scratch(EM *EM_RESTRICT parent_em, size_t size) {
 
 
 /*
- * Create a bump allocator
+ * Create a standard bump allocator
  *
  * Initializes a linear (bump) allocator within a parent Easy Memory instance. 
  * This is ideal for high-speed, temporary allocations where all memory is 
@@ -3264,23 +3267,70 @@ EMDEF Bump *em_bump_create(EM *EM_RESTRICT parent_em, size_t size) {
     void *data = em_alloc(parent_em, size);  // Allocate memory from the parent easy memory
     if (!data) return NULL;
 
-    Block *block = NULL;
-
-    uintptr_t *spot_before_user_data = (uintptr_t *)(void *)((char *)data - sizeof(uintptr_t));
-    uintptr_t check = *spot_before_user_data ^ (uintptr_t)data;
-    if (check == (uintptr_t)EM_MAGIC) {
-        block = (Block *)(void *)((char *)data - sizeof(Block));
-    }
-    // LCOV_EXCL_START
-    else {
-        block = (Block *)check;
-    }
-    // LCOV_EXCL_STOP
-    
+    Block *block = (Block *)(void *)((char *)data - sizeof(Block));
     Bump *bump = (Bump *)((void *)block);  // just cast allocated Block to Bump
 
     bump_set_em(bump, parent_em);
     bump_set_offset(bump, sizeof(Bump));
+
+    return bump;
+}
+
+/*
+ * Create a scratch bump allocator
+ *
+ * Initializes a linear (bump) allocator within a scratchpad block at the 
+ * extreme physical end (highest addresses) of the parent instance.
+ *
+ * Zero-Overhead Header (ABI Compatibility):
+ *   The Bump and Block structures are strictly ABI compatible. The bump 
+ *   allocator hijacks the parent's scratch block header to store its metadata. 
+ *   This ensures that 100% of the allocated payload is directly usable, 
+ *   with zero additional overhead for the allocator's own structure.
+ *
+ * Performance:
+ *   - Creation: O(1) Constant Time. It simply reserves the tail space of 
+ *     the parent arena without any tree searches.
+ *   - Allocation: O(1) Constant Time (linear pointer shift).
+ *   - Destruction: O(1) Constant Time. Uses the "Reactive Tail Recovery" 
+ *     mechanism to instantly restore the parent's free tail.
+ *
+ * Instant Parent Tracking:
+ *   The bump allocator stores a direct pointer to its parent EM instance 
+ *   within its header, ensuring safe and fast destruction.
+ *
+  * Capacity Limits:
+ *   - Physical Max: 512 MiB (32-bit) or 2 EiB (64-bit).
+ *   - Usable Max: Exactly the 'size' requested from the parent. 
+ *     Note: The internal offset starts after the header (sizeof(Bump)).
+ *   - Minimum: 16 bytes (EM_MIN_BUFFER_SIZE).
+ * 
+ * Constraints:
+ *   - Only ONE active scratchpad allocation (raw, arena, or bump) is 
+ *     allowed at a time per any Easy Memory instance.
+ *   - You must destroy the current scratch bump allocator (`em_bump_destroy`) 
+ *     before creating a new scratch resource.
+ *
+ * Parameters:
+ *   - parent_em: Pointer to the active parent instance.
+ *   - size:      Total capacity to carve out from the parent's tail.
+ *
+ * Returns:
+ *   - Pointer to the Bump allocator instance, or NULL on failure.
+ */
+EMDEF Bump *em_bump_create_scratch(EM *EM_RESTRICT parent_em, size_t size) {
+    EM_CHECK((parent_em != NULL),          NULL, "Internal Error: 'em_bump_create_scratch' called with NULL parent easy memory");
+    EM_CHECK((size <= EMMAX_SIZE),         NULL, "Internal Error: 'em_bump_create_scratch' called with too big size");
+    EM_CHECK((size >= EM_MIN_BUFFER_SIZE), NULL, "Internal Error: 'em_bump_create_scratch' called with too small size");
+
+    void *data = em_alloc_scratch(parent_em, size); // Allocate scratch memory from the parent easy memory
+    if (!data) return NULL;
+
+    Block *block = (Block *)(void *)((char *)data - sizeof(Block));
+    Bump *bump = (Bump *)((void *)block); // just cast allocated Block to Bump
+
+    bump_set_offset(bump, sizeof(Bump));
+    bump_set_em(bump, parent_em);
 
     return bump;
 }

@@ -328,6 +328,69 @@ static void test_bump_trim(void) {
     }
 }
 
+static void test_scratch_bump_lifecycle(void) {
+    TEST_PHASE("Scratch Bump Lifecycle & Reset");
+
+    EM *em = em_create(1024);
+    ASSERT(em != NULL, "Parent EM creation failed");
+    size_t initial_free_space = free_size_in_tail(em);
+
+    #ifdef DEBUG
+    print_fancy(em, 60);
+    #endif
+
+    TEST_CASE("Create Scratch Bump Allocator");
+    size_t bump_size = 256;
+    Bump *bump = em_bump_create_scratch(em, bump_size);
+    
+    ASSERT(bump != NULL, "Bump creation failed");
+    ASSERT(em_get_has_scratch(em) == true, "EM should be marked as having scratch");
+    ASSERT(free_size_in_tail(em) < initial_free_space, "Parent tail should shrink");
+
+    size_t initial_offset = bump_get_offset(bump);
+    ASSERT(initial_offset == sizeof(Bump), "Initial offset should be sizeof(Bump)");
+
+    #ifdef DEBUG
+    print_fancy(em, 60);
+    #endif
+
+    TEST_CASE("Bump Allocations");
+    
+    void *ptr1 = em_bump_alloc(bump, 32);
+    ASSERT(ptr1 != NULL, "First allocation failed");
+    ASSERT(bump_get_offset(bump) == initial_offset + 32, "Offset should increase exactly by 32");
+
+    void *ptr2 = em_bump_alloc(bump, 64);
+    ASSERT(ptr2 != NULL, "Second allocation failed");
+    ASSERT(bump_get_offset(bump) == initial_offset + 32 + 64, "Offset should increase exactly by 64");
+
+    ASSERT((char*)ptr2 == (char*)ptr1 + 32, "Allocations should be physically adjacent");
+
+    TEST_CASE("Bump Reset");
+    em_bump_reset(bump);
+    
+    ASSERT(bump_get_offset(bump) == sizeof(Bump), "Offset should be reset to initial state");
+
+    TEST_CASE("Allocation after Reset");
+    
+    void *ptr3 = em_bump_alloc(bump, 32);
+    ASSERT(ptr3 != NULL, "Allocation after reset failed");
+    
+    ASSERT(ptr3 == ptr1, "Memory should be reused (same address as ptr1)");
+    
+    TEST_CASE("Destroy Scratch Bump");
+    em_bump_destroy(bump);
+
+    ASSERT(em_get_has_scratch(em) == false, "Scratch flag should be cleared");
+    ASSERT(free_size_in_tail(em) == initial_free_space, "Parent free space should be fully restored");
+
+    #ifdef DEBUG
+    print_fancy(em, 60);
+    #endif
+
+    em_destroy(em);
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0); 
 
@@ -335,6 +398,7 @@ int main(void) {
     test_bump_allocation();
     test_bump_hard_usage();
     test_bump_trim();
+    test_scratch_bump_lifecycle();
 
     // Print test summary
     print_test_summary();

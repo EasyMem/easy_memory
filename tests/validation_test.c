@@ -819,6 +819,53 @@ static void test_scratch_allocation_and_freeing(void) {
     em_destroy(em);
 }
 
+static void test_scratch_tail_recovery(void) {
+    TEST_PHASE("Scratch Tail Recovery Edge Case");
+
+    TEST_CASE("Setup: Create EM and Scratch");
+    EM *em = em_create(1024); 
+    ASSERT(em != NULL, "EM creation should succeed");
+
+    size_t scratch_size = 256;
+    void *scratch_ptr = em_alloc_scratch(em, scratch_size);
+    ASSERT(scratch_ptr != NULL, "Scratch allocation should succeed");
+
+    #ifdef DEBUG
+    print_fancy(em, 50);
+    #endif
+
+    TEST_CASE("Jam the tail (Fill gap completely)");
+    size_t gap_size = free_size_in_tail(em);
+    
+    void *filler = em_alloc(em, gap_size);
+    ASSERT(filler != NULL, "Filler allocation should succeed");
+    
+    ASSERT(free_size_in_tail(em) == 0, "Tail should be fully occupied (0 bytes free)");
+    
+    void *fail_ptr = em_alloc(em, 1);
+    ASSERT(fail_ptr == NULL, "Allocation should fail when tail is jammed");
+
+    #ifdef DEBUG
+    print_fancy(em, 50);
+    #endif
+
+    TEST_CASE("Free scratch and verify tail resurrection");
+    em_free(scratch_ptr);
+
+    size_t recovered_size = free_size_in_tail(em);
+    ASSERT(recovered_size > 0, "Free size should be recovered after freeing scratch");
+
+    #ifdef DEBUG
+    print_fancy(em, 50);
+    #endif
+
+    TEST_CASE("Allocate in recovered tail");
+    void *resurrected_ptr = em_alloc(em, scratch_size);
+    ASSERT(resurrected_ptr != NULL, "Should be able to allocate in the new tail");
+
+    em_destroy(em);
+}
+
 static void test_invalid_scratch_allocation(void) {
     TEST_PHASE("Invalid Scratch Allocation Scenarios");
 
@@ -921,6 +968,7 @@ int main(void) {
     test_scratch_allocation_and_freeing();
     test_invalid_scratch_allocation();
     test_scratch_em_creation_and_freeing();
+    test_scratch_tail_recovery();
     
     print_test_summary();
     return tests_failed > 0 ? 1 : 0;

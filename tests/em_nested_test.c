@@ -27,6 +27,11 @@ static void test_nested_creation(void) {
     ASSERT(em_get_capacity(nested_em) == nested_em_size, "Nested EM capacity should match requested size");
 
     #ifdef DEBUG
+    print_em(nested_em);
+    print_fancy(nested_em, 100);
+    #endif
+
+    #ifdef DEBUG
     print_em(parent_em);
     print_fancy(parent_em, 100);
     #endif

@@ -613,9 +613,6 @@ EM *em_create_scratch_aligned(EM *EM_RESTRICT parent_em, size_t size, size_t ali
 EMDEF void em_reset(EM *EM_RESTRICT em);
 EMDEF void em_reset_zero(EM *EM_RESTRICT em);
 EMDEF void em_destroy(EM *em);
-EMDEF void em_free_scratch(EM *em); // Optional free scratch memory function. Try not to use it. 
-//                                   Recommended to call em_free or dedicated em_destroy_* for specific objects. 
-//                                   Yes, EM know what blocks\sub-allocators are scratch and can free\destroy them properly. 
 
 
 // --- Allocation Core ---
@@ -1985,6 +1982,26 @@ static inline EM *get_parent_em(Block *block) {
 
 
 /*
+ * Free scratch memory in easy memory
+ * Marks the scratch memory as free
+ */
+static void em_free_scratch(EM *em, Block *scratch_block) {
+    if (!em || !em_get_has_scratch(em)) return;
+
+    em_set_has_scratch(em, false);
+
+    Block *tail = em_get_tail(em);
+
+    if (get_size(tail) != 0) {
+        set_color(scratch_block, EMRED);
+        set_is_free(scratch_block, true);
+        set_prev(scratch_block, tail);
+        em_set_tail(em, scratch_block);
+        set_size(scratch_block, 0);
+    }
+}
+
+/*
  * Free block (full version)
  * Frees a block of memory and merges with adjacent free blocks if possible
  */
@@ -1997,7 +2014,7 @@ static void em_free_block_full(EM *em, Block *block) {
     #endif
 
     if (get_is_in_scratch(block)) {
-        em_free_scratch(em);
+        em_free_scratch(em, block);
         return;
     }
 
@@ -2221,17 +2238,6 @@ static void *alloc_in_tail_full(EM *em, size_t size, size_t alignment) {
 
 
 
-
-/*
- * Free scratch memory in easy memory
- * Marks the scratch memory as free
- */
-EMDEF void em_free_scratch(EM *em) {
-    if (!em || !em_get_has_scratch(em)) return;
-
-    em_set_has_scratch(em, false);
-    // Yeah it is that simple
-}
 
 /*
  * Deallocate a memory block
@@ -3528,13 +3534,31 @@ EMDEF void print_llrb_tree(Block *node, int depth) {
 EMDEF void print_em(EM *em) {
     if (!em) return;
     PRINTF(T("Easy Memory: %p\n"), em);
-    PRINTF(T("EM Full Size: %zu\n"), em_get_capacity(em) + sizeof(EM));
-    PRINTF(T("EM Data Size: %zu\n"), em_get_capacity(em));
+    PRINTF(T("EM Full Size: %zu\n"), em_get_capacity(em));
+    PRINTF(T("EM Data Size: %zu\n"), em_get_capacity(em) - sizeof(EM));
     PRINTF(T("EM Alignment: %zu\n"), em_get_alignment(em));
     PRINTF(T("Data: %p\n"), (void *)((char *)em + sizeof(EM)));
     PRINTF(T("Tail: %p\n"), em_get_tail(em));
     PRINTF(T("Free Blocks: %p\n"), em_get_free_blocks(em));
     PRINTF(T("Free Size in Tail: %zu\n"), free_size_in_tail(em));
+    
+    if (em_get_has_scratch(em)) {
+        // Calculate Scratchpad location and size
+        uintptr_t raw_end = (uintptr_t)em + em_get_capacity(em);
+        uintptr_t aligned_end = align_down(raw_end, EMMIN_ALIGNMENT);
+        size_t *stored_size_ptr = (size_t*)(aligned_end - sizeof(uintptr_t));
+        
+        size_t total_scratch_size = *stored_size_ptr;
+        uintptr_t header_addr = raw_end - total_scratch_size;
+        Block *scratch_block = (Block *)header_addr;
+
+        PRINTF(T("Scratchpad: PRESENT\n"));
+        PRINTF(T("  Address: %p\n"), scratch_block);
+        PRINTF(T("  Full Size: %zu\n"), total_scratch_size);
+        PRINTF(T("  Data Size: %zu\n"), get_size(scratch_block));
+    } else {
+        PRINTF(T("Scratchpad: NONE\n"));
+    }
     PRINTF(T("\n"));
 
     size_t occupied_data = 0;
@@ -3583,102 +3607,136 @@ EMDEF void print_em(EM *em) {
 
 /*
  * Print a fancy visualization of the easy memory
- * Displays a bar chart of the easy memory's usage, including free blocks, occupied data, and metadata
+ * Displays a bar chart of the easy memory's usage
  * Uses ANSI escape codes to colorize the visualization
+ * Legend:
+ *   - Yellow (@): Metadata (EM header and block headers)
+ *   - Red (#): Occupied blocks
+ *   - Green (=): Free blocks
+ *   - Blue (S): Scratchpad area
+ *   - Black (.): Empty space (unallocated)
  */
 EMDEF void print_fancy(EM *em, size_t bar_size) {
     if (!em) return;
     
+    // total_size includes the EM header and the entire managed buffer
     size_t total_size = em_get_capacity(em);
 
-    PRINTF(T("\nEasy Memory Visualization [%zu bytes]\n"), total_size + sizeof(EM));
+    PRINTF(T("\nEasy Memory Visualization [%zu bytes]\n"), total_size);
     PRINTF(T("┌"));
     for (int i = 0; i < (int)bar_size; i++) PRINTF(T("─"));
     PRINTF(T("┐\n│"));
 
-    // Size of one segment of visualization in bytes
-    double segment_size = (double)(total_size / bar_size);
+    // --- 1. PRE-CALCULATIONS ---
+
+    // A. Scratchpad Offset
+    // Determine where the scratchpad starts relative to the EM base address
+    size_t scratch_offset = total_size; 
+    if (em_get_has_scratch(em)) {
+        uintptr_t raw_end = (uintptr_t)em + total_size;
+        uintptr_t aligned_end = align_down(raw_end, EMMIN_ALIGNMENT);
+        size_t *stored_size_ptr = (size_t*)(aligned_end - sizeof(uintptr_t));
+        uintptr_t header_addr = raw_end - *stored_size_ptr;
+        
+        if (header_addr >= (uintptr_t)em) {
+             scratch_offset = header_addr - (uintptr_t)em;
+        }
+    }
+
+    // B. First Block Offset
+    // Calculate offset to detect initial alignment padding
+    Block *first_block = em_get_first_block(em);
+    size_t first_block_offset = (uintptr_t)first_block - (uintptr_t)em;
+
+    // --- 2. RENDERING ---
+
+    double segment_size = (double)total_size / (double)bar_size;
     
-    // Iterate through each segment of visualization
     for (int i = 0; i < (int)bar_size; i++) {
-        // Calculate the start and end positions of the segment in memory
         size_t segment_start = (size_t)(i * segment_size);
         size_t segment_end = (size_t)((i + 1) * segment_size);
         
-        // Determine which data type prevails in this segment
-        char segment_type = ' '; // Empty by default
+        // CORRECTION: High-Zoom Levels
+        // If the scale is so detailed that start == end (less than 1 byte per pixel),
+        // force the window to be at least 1 byte to verify the content.
+        if (segment_end <= segment_start) {
+            segment_end = segment_start + 1;
+        }
+
+        // PRIORITY: Scratchpad (Blue)
+        if (segment_start >= scratch_offset) {
+            PRINTF(T("\033[44mS\033[0m")); 
+            continue; 
+        }
+
+        char segment_type = '-'; // Default: Black (Void/Unknown)
         size_t max_overlap = 0;
         
-        // Check easy memory metadata
-        size_t em_meta_end = sizeof(EM);
-        if (segment_start < em_meta_end) {
-            size_t overlap = segment_start < em_meta_end ? 
-                (em_meta_end > segment_end ? segment_end - segment_start : em_meta_end - segment_start) : 0;
-            if (overlap > max_overlap) {
-                max_overlap = overlap;
-                segment_type = '@'; // Easy memory metadata
+        // 1. EM Header (Yellow)
+        // From 0 to sizeof(EM)
+        if (segment_start < sizeof(EM)) {
+             size_t overlap = (segment_end < sizeof(EM) ? segment_end : sizeof(EM)) - segment_start;
+             if (overlap > max_overlap) {
+                 max_overlap = overlap;
+                 segment_type = '@';
+             }
+        }
+
+        // 2. Alignment Padding (Red/Occupied)
+        // From end of EM Header to Start of First Block.
+        // If first_block_offset > sizeof(EM), there is a gap used for alignment.
+        if (first_block_offset > sizeof(EM)) {
+            size_t pad_start = sizeof(EM);
+            size_t pad_end = first_block_offset;
+            
+            if (segment_start < pad_end && segment_end > pad_start) {
+                size_t overlap_end = (segment_end < pad_end) ? segment_end : pad_end;
+                size_t overlap_start = (segment_start > pad_start) ? segment_start : pad_start;
+                size_t overlap = overlap_end - overlap_start;
+                
+                if (overlap > max_overlap) {
+                    max_overlap = overlap;
+                    segment_type = '#'; // Treat padding as occupied space
+                }
             }
         }
         
-        // Check each block
-        size_t current_pos = 0;
-        Block *current = (Block *)(void *)((char *)em + sizeof(EM));
+        // 3. Blocks (Loop)
+        size_t current_pos = first_block_offset; 
+        Block *current = first_block;
         
         while (current) {
-            // Position of block metadata
-            size_t block_meta_start = current_pos;
-            size_t block_meta_end = block_meta_start + sizeof(Block);
-            
-            // Check intersection with block metadata
-            if (segment_start < block_meta_end && segment_end > block_meta_start) {
+            // Block Meta
+            size_t block_meta_end = current_pos + sizeof(Block);
+            if (segment_start < block_meta_end && segment_end > current_pos) {
                 size_t overlap = (segment_end < block_meta_end ? segment_end : block_meta_end) - 
-                             (segment_start > block_meta_start ? segment_start : block_meta_start);
+                             (segment_start > current_pos ? segment_start : current_pos);
                 if (overlap > max_overlap) {
                     max_overlap = overlap;
-                    segment_type = '@'; // Block metadata
+                    segment_type = '@'; 
                 }
             }
             
-            // Position of block data
+            // Block Data
+            size_t block_len = get_size(current);
             size_t block_data_start = block_meta_end;
-            size_t block_data_end = block_data_start + get_size(current);
+            size_t block_data_end = block_data_start + block_len;
             
-            // Check intersection with block data
             if (segment_start < block_data_end && segment_end > block_data_start) {
-                // Calculate end point of overlap
-                size_t overlap_end = segment_end;
-                if (segment_end > block_data_end) {
-                    overlap_end = block_data_end;
-                }
-
-                // Calculate start point of overlap
-                size_t overlap_start = segment_start;
-                if (segment_start < block_data_start) {
-                    overlap_start = block_data_start;
-                }
-
+                size_t overlap_end = (segment_end > block_data_end) ? block_data_end : segment_end;
+                size_t overlap_start = (segment_start < block_data_start) ? block_data_start : segment_start;
                 size_t overlap = overlap_end - overlap_start;
+                
                 if (overlap > max_overlap) {
+                    // If block is Free (including Tail) - draw Green, otherwise Red
                     max_overlap = overlap;
-                    segment_type = get_is_free(current) ? ' ' : '#'; // Free or occupied block
+                    segment_type = get_is_free(current) ? ' ' : '#'; 
                 }
             }
             
             current_pos = block_data_end;
             current = next_block(em, current);
-        }
-
-        // Check tail free memory
-        if (free_size_in_tail(em) > 0) {
-            size_t tail_start = total_size - free_size_in_tail(em);
-            if (segment_start < total_size && segment_end > tail_start) {
-                size_t overlap = (segment_end < total_size ? segment_end : total_size) - 
-                               (segment_start > tail_start ? segment_start : tail_start);
-                if (overlap > max_overlap) {
-                    max_overlap = overlap;
-                    segment_type = '-'; // Free tail
-                }
-            }
+            if (current_pos > segment_end) break; // Optimization
         }
         
         // Display the corresponding symbol with color
@@ -3689,19 +3747,22 @@ EMDEF void print_fancy(EM *em, size_t bar_size) {
         } else if (segment_type == ' ') {
             PRINTF(T("\033[42m=\033[0m")); // Green for free blocks
         } else if (segment_type == '-') {
-            PRINTF(T("\033[40m.\033[0m")); // Black for empty space
+            PRINTF(T("\033[40m.\033[0m")); // Black for empty space    
+        } else if (segment_type == 'S') { 
+            PRINTF(T("\033[44mS\033[0m")); // Blue
         }
     }
 
     PRINTF(T("│\n└"));
     for (int i = 0; i < (int)bar_size; i++) PRINTF(T("─"));
     PRINTF(T("┘\n"));
-
-    PRINTF(T("Legend: "));
+    
+    PRINTF(T("\nLegend: "));
     PRINTF(T("\033[43m @ \033[0m - Used Meta blocks, "));
     PRINTF(T("\033[41m # \033[0m - Used Data blocks, "));
-    PRINTF(T("\033[42m   \033[0m - Free blocks, "));
-    PRINTF(T("\033[40m   \033[0m - Empty space\n\n"));
+    PRINTF(T("\033[42m = \033[0m - Free blocks, "));
+    PRINTF(T("\033[44m S \033[0m - Scratch block, "));
+    PRINTF(T("\033[40m . \033[0m - Empty space\n\n"));
 }
 #endif // DEBUG
 

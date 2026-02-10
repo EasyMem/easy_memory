@@ -639,7 +639,7 @@ EMDEF void em_free(void *data);
 
 // --- Bump Allocator ---
 EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED
-Bump *em_create_bump(EM *EM_RESTRICT em, size_t size);
+Bump *em_bump_create(EM *EM_RESTRICT em, size_t size);
 
 EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED EM_ATTR_ALLOC_SIZE(2, size)
 void *em_bump_alloc(Bump *EM_RESTRICT bump, size_t size);
@@ -3256,10 +3256,10 @@ EMDEF EM *em_create_scratch(EM *EM_RESTRICT parent_em, size_t size) {
  * Returns:
  *   - Pointer to the Bump allocator instance, or NULL on failure.
  */
-EMDEF Bump *em_create_bump(EM *EM_RESTRICT parent_em, size_t size) {
-    EM_CHECK((parent_em != NULL),          NULL, "Internal Error: 'em_create_bump' called with NULL parent easy memory");
-    EM_CHECK((size <= EMMAX_SIZE),         NULL, "Internal Error: 'em_create_bump' called with too big size");
-    EM_CHECK((size >= EM_MIN_BUFFER_SIZE), NULL, "Internal Error: 'em_create_bump' called with too small size");
+EMDEF Bump *em_bump_create(EM *EM_RESTRICT parent_em, size_t size) {
+    EM_CHECK((parent_em != NULL),          NULL, "Internal Error: 'em_bump_create' called with NULL parent easy memory");
+    EM_CHECK((size <= EMMAX_SIZE),         NULL, "Internal Error: 'em_bump_create' called with too big size");
+    EM_CHECK((size >= EM_MIN_BUFFER_SIZE), NULL, "Internal Error: 'em_bump_create' called with too small size");
 
     void *data = em_alloc(parent_em, size);  // Allocate memory from the parent easy memory
     if (!data) return NULL;

@@ -50,6 +50,7 @@
     *   **Bump:** O(1) linear allocator (Available).
     *   *Stack / Slab:* (Coming soon).
 *   **Scoped Memory:** Supports `em_create_nested` for hierarchical memory management. Freeing a parent scope instantly invalidates all children with O(1) complexity.
+*   **Tail-End Scratchpad:** Instantly reserves a block at the highest memory address (**O(1)**). Ideal for temporary workspaces to prevent fragmentation of the main heap. Fully integrated with standard `em_free`.
 *   **Concurrency Model:** Intentionally lock-free and single-threaded to avoid mutex overhead. Designed for **Thread-Local Storage (TLS)** patterns (one `EM` instance per thread).
 *   **Safety First:**
     *   **XOR-Magic:** Headers are protected by address-dependent magic numbers to detect buffer underflows.
@@ -113,11 +114,16 @@ The backbone of the system. It handles the heavy lifting of block splitting, mer
 *   **Adaptive Strategy:** It doesn't blindly search the tree. If you allocate sequentially, it acts as a fast O(1) bump allocator using the tail block. If you free in LIFO order (stack-like), it merges instantaneously. It only falls back to the O(log n) Tree Search when memory becomes fragmented.
 *   **Triple-Key Tree:** When searching for gaps, it finds the *best* block not just by size, but by alignment quality, preserving large contiguous chunks.
 
-### 2. Scratchpad (Lifecycle Isolation) (In Progress)
+### 2. Scratchpad (Lifecycle Isolation)
 A mechanism to allocate a **single dedicated block** at the very end of the memory pool (highest address).
-*   **Purpose:** Acts as an anchor point for temporary memory contexts. By placing a temporary sub-allocator (like `Bump` or `Nested Arena`) at the extreme end of memory, you maximize the contiguous space available for the main heap.
-*   **Universal API:** Supports raw memory (`em_alloc_scratch`), EM (`em_create_scratch`) or sub-allocators (`em_create_bump_scratch`)(Planned).
-*   **Symmetrical Lifecycle:** No special deallocation functions required. Resources allocated via scratchpad are freed using their standard counterparts (e.g., `em_create_bump_scratch` → `em_bump_destroy`, `em_alloc_scratch` → `em_free`).
+
+*   **Purpose:** Acts as an anchor point for temporary memory contexts. By placing a temporary sub-allocator (like `Bump` or `Nested Scope`) at the extreme end of memory, you maximize the contiguous space available for the main heap.
+*   **Strict O(1) Performance:** Allocation simply reserves the tail space, and deallocation restores the previous state. No tree searches involved.
+*   **Unified Lifecycle:** **No special deallocation functions required.** The system automatically detects scratch blocks within the standard `em_free()` or `em_destroy()` calls.
+    *   Raw Memory: `em_alloc_scratch` → `em_free`
+    *   Scratch EM: `em_create_scratch` → `em_destroy`
+    *   Bump Allocator: `em_bump_create_scratch` → `em_bump_destroy`
+*   **Constraint:** Only one scratch allocation is active at a time per `EM` instance.
 
 ### 3. Sub-Allocators
 Specialized tools for specific allocation patterns. They are created *inside* a parent Core/Arena with zero overhead.
@@ -227,7 +233,7 @@ For high-speed temporary objects. Includes `trim` to return unused memory to the
 ```c
 void load_level_assets(EM *main_em) {
     // Reserve a large chunk (1MB) for the bump allocator
-    Bump *bump = em_create_bump(main_em, 1024 * 1024);
+    Bump *bump = em_bump_create(main_em, 1024 * 1024);
 
     // ... load unknown amount of assets ...
     for (int i = 0; i < asset_count; ++i) {

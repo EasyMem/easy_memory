@@ -7,7 +7,6 @@ UNAME_M := $(shell uname -m)
 ASAN_OPTS = allocator_may_return_null=1:detect_stack_use_after_return=1
 SAN_FLAGS = -fsanitize=address,undefined
 
-ASAN_OPTS = allocator_may_return_null=1:detect_stack_use_after_return=1
 LSAN_RUN_FIX = 
 
 ifeq ($(UNAME_S), Linux)

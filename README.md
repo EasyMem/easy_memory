@@ -185,7 +185,7 @@ Basic allocation, zero-initialization, and fast resetting.
 EM *em = em_create(1024 * 1024);
 
 // Standard allocation
-MyObject *obj = (MyObject *)em_alloc(em, sizeof(MyObject))
+MyObject *obj = (MyObject *)em_alloc(em, sizeof(MyObject));
 
 // Zero-initialized allocation (like calloc)
 Point *pts = (Point *)em_calloc(em, 10, sizeof(Point));

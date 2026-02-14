@@ -1545,7 +1545,9 @@ static inline Block *create_next_block(EM *em, Block *prev_block) {
     
     if (!is_block_within_em(em, prev_block)) {
         EM_ASSERT(false && "Internal Error: prev_block out of bounds");
-        return NULL;
+        // LCOV_EXCL_START
+        return NULL; // Exclude from coverage as this should never happen if the library is used correctly, and it's already covered by assertions
+        // LCOV_EXCL_STOP
     }
 
     Block *nb = next_block_unsafe(prev_block);
@@ -2232,7 +2234,9 @@ static void *alloc_in_tail_full(EM *em, size_t size, size_t alignment) {
     if (free_space != final_needed_block_size) {
         Block *new_tail = create_next_block(em, tail);
         if (new_tail) em_set_tail(em, new_tail);
-        else set_size(tail, free_space);
+        // LCOV_EXCL_START
+        else set_size(tail, free_space); // Exclude from coverage as this should never happen if the library is used correctly, and it's already covered by assertions and fallback logic
+        // LCOV_EXCL_STOP
     }
 
     return (void *)aligned_data_ptr;

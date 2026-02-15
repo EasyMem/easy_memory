@@ -383,6 +383,17 @@ This library has been verified to run correctly on embedded hardware without sta
 ## Why All This?
 *idk, i was bored*
 
+## Official Badges
+
+Show support by adding the EasyMem badge to your project's README.
+
+Preview | Markdown (Copy & Paste) |
+| :--- | :--- |
+| [![EasyMem](https://img.shields.io/badge/EasyMem-easy__memory-27272d?style=flat&logo=github&logoColor=white)](https://github.com/EasyMem/easy_memory) | `[![EasyMem](https://img.shields.io/badge/EasyMem-easy__memory-27272d?style=flat&logo=github&logoColor=white)](https://github.com/EasyMem/easy_memory)` |
+| [![Powered by easy_memory](https://img.shields.io/badge/Powered_by-easy__memory-27272d?style=flat&logo=github&logoColor=white)](https://github.com/EasyMem/easy_memory) | `[![Powered by easy_memory](https://img.shields.io/badge/Powered_by-easy__memory-27272d?style=flat&logo=github&logoColor=white)](https://github.com/EasyMem/easy_memory)` |
+| [![EasyMem](https://img.shields.io/badge/EasyMem-easy__memory-27272d?style=flat-square&logo=github&logoColor=white)](https://github.com/EasyMem/easy_memory) | `[![EasyMem](https://img.shields.io/badge/EasyMem-easy__memory-27272d?style=flat-square&logo=github&logoColor=white)](https://github.com/EasyMem/easy_memory)` |
+| [![Powered by easy_memory](https://img.shields.io/badge/Powered_by-easy__memory-27272d?style=flat-square&logo=github&logoColor=white)](https://github.com/EasyMem/easy_memory) | `[![Powered by easy_memory](https://img.shields.io/badge/Powered_by-easy__memory-27272d?style=flat-square&logo=github&logoColor=white)](https://github.com/EasyMem/easy_memory)` |
+
 ## Contributing
 
 Contributions are welcome! Whether it's a bug fix, a new feature, or an improvement to the documentation, your input is valued. 

@@ -77,10 +77,12 @@ jobs:
           FOR %%f IN (*.c) DO (
             echo --- Compiling %%f with MSVC ---
             cl.exe /W4 /WX /DDEBUG /I.. /Fe:%%~nf.exe %%f
+            if errorlevel 1 exit /b 1
             echo --- Running %%~nf.exe ---
             call %%~nf.exe
+            if errorlevel 1 exit /b 1
           )
-
+            
       # Valgrind & Codecov (Linux/GCC Only)
       - name: Run Valgrind Memory Check
         if: runner.os == 'Linux' && matrix.compiler == 'gcc'
@@ -192,7 +194,7 @@ jobs:
         std: [c99, c11, c17, c2x]
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Compile and Test
         run: |
@@ -207,16 +209,15 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
         compiler: [gcc, clang]
-        opt: [-O1, -O2, -O3, -Os]
+        opt: [-O1, -O2, -O3, -Os, -Oz]
+        exclude:
+          - compiler: gcc
+            opt: -Oz
     steps:
       - uses: actions/checkout@v4
       - name: Build and Test
         run: |
-          if [ "${{ matrix.compiler }}" = "gcc" ] && [ "${{ matrix.opt }}" = "-Oz" ]; then
-            make tests CC=gcc EXTRA_CFLAGS="-Os"
-          else
-            make tests CC=${{ matrix.compiler }} EXTRA_CFLAGS="${{ matrix.opt }}"
-          fi
+          make tests CC=${{ matrix.compiler }} EXTRA_CFLAGS="${{ matrix.opt }}"
 
   # Job 9: MSVC with different architectures and optimizations
   build-and-test-msvc:

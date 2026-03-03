@@ -250,15 +250,26 @@ void load_level_assets(EM *main_em) {
 Ideal for microcontrollers (STM32, AVR, RP2040, ESP32) or OS kernels.
 
 ```c
+#define EASY_MEMORY_IMPLEMENTATION
+
+// Bare metal / no libc heap
+#define EM_NO_MALLOC
+// Prefer fail-fast contract checks (optional)
+#define EM_SAFETY_POLICY EM_POLICY_CONTRACT
+
+#include "easy_memory.h"
+
 // Pre-allocate memory in .bss or stack
 uint8_t pool[1024 * 32]; 
 
-void main() {
+int main(void) {
     // Initialize EM over the static buffer
     // Returns NULL if the buffer is too small for metadata
     EM *em = em_create_static(pool, sizeof(pool));
 
     // ... use em_alloc as normal ...
+
+    return 0;
 }
 ```
 

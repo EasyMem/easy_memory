@@ -1006,7 +1006,7 @@ static inline bool is_valid_magic(const Block *block, const void *user_ptr) {
 
 
 /*
- * Get easy memory instace from block
+ * Get easy memory instance from block
  * Extracts the easy memory pointer stored in the block's as.occupied.em field
  */
 static inline EM *get_em(const Block *block) {
@@ -1152,7 +1152,7 @@ static inline void em_set_is_nested(EM *em, bool is_nested) {
 
     /*
      * See 'set_prev' for explanation of pointer tagging.
-     * Here we use 2st least significant bit to store is_nested flag. 
+     * Here we use 2nd least significant bit to store is_nested flag. 
     */
 
     uintptr_t int_ptr = (uintptr_t)(em->as.self.tail);  // Get current pointer with flags
@@ -2157,8 +2157,8 @@ static void *alloc_in_tail_full(EM *em, size_t size, size_t alignment) {
     */
 
     Block *tail = em_get_tail(em);
-    EM_ASSERT((tail != NULL)      && "Internal Error: alloc_in_tail_full' called on NULL tail");
-    EM_ASSERT((get_is_free(tail)) && "Internal Error: alloc_in_tail_full' called on non free tail");
+    EM_ASSERT((tail != NULL)      && "Internal Error: 'alloc_in_tail_full' called on NULL tail");
+    EM_ASSERT((get_is_free(tail)) && "Internal Error: 'alloc_in_tail_full' called on non free tail");
 
     // Calculate padding needed for alignment before user data
     uintptr_t raw_data_ptr = (uintptr_t)block_data(tail);
@@ -2414,7 +2414,7 @@ EMDEF void *em_alloc(EM *EM_RESTRICT em, size_t size) {
 }
 
 /*
- * Allocate scratch memory at the physical end of the instance [IN PROGRESS]
+ * Allocate scratch memory at the physical end of the instance
  *
  * This function provides a specialized mechanism to dynamically "bite off" memory 
  * from the very end (highest addresses) of the memory pool.
@@ -2523,7 +2523,7 @@ EMDEF void *em_alloc_scratch_aligned(EM *EM_RESTRICT em, size_t size, size_t ali
 }
 
 /*
- * Allocate scratch memory with default alignment [IN PROGRESS]
+ * Allocate scratch memory with default alignment
  *
  * A convenience wrapper for em_alloc_scratch_aligned that uses the arena's 
  * baseline alignment (configured during instance creation). 
@@ -2556,7 +2556,7 @@ EMDEF void *em_alloc_scratch_aligned(EM *EM_RESTRICT em, size_t size, size_t ali
  * Safety & Behavior:
  *   - EM_POLICY_CONTRACT: 
  *       Triggers EM_ASSERT if 'em' is NULL, a scratch is already active, 
- *       или 'size' некорректен.
+ * 
  *   - EM_POLICY_DEFENSIVE: 
  *       Returns NULL if 'em' is NULL, scratch is already active, or 
  *       the tail area cannot fit the request + overhead.
@@ -3107,7 +3107,7 @@ EMDEF EM *em_create_nested(EM *EM_RESTRICT parent_em, size_t size) {
 }
 
 /*
- * Create a scratch nested Easy Memory instance with custom alignment [IN PROGRESS]
+ * Create a scratch nested Easy Memory instance with custom alignment
  *
  * A specialized nested arena that is dynamically "bitten off" from the 
  * extreme physical end (highest addresses) of the parent instance.
@@ -3172,7 +3172,7 @@ EMDEF EM *em_create_scratch_aligned(EM *EM_RESTRICT parent_em, size_t size, size
 }
 
 /*
- * Create a scratch nested Easy Memory instance with default alignment [IN PROGRESS]
+ * Create a scratch nested Easy Memory instance with default alignment
  *
  * A convenience wrapper for em_create_scratch_aligned that uses the 
  * parent instance's baseline alignment. 

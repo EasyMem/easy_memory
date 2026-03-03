@@ -126,6 +126,7 @@ valgrind: clean
 # Testing: run all tests without debug info
 tests: build_silent
 	@printf "Running all tests (normal mode)...\n"
+	@exit_code=0; \
 	@for test in $(TEST_SRCS:%.c=%_silent) ; do \
 		printf "\n--- Running $$test ---\n" ; \
 		$(LSAN_RUN_FIX) ./$$test ; \
@@ -144,6 +145,7 @@ tests: build_silent
 # Testing: run all tests with debug info
 tests_full: build_debug
 	@printf "Running all tests (debug mode)...\n"
+	@exit_code=0; \
 	@for test in $(TEST_SRCS:%.c=%_debug) ; do \
 		printf "\n--- Running $$test ---\n" ; \
 		$(LSAN_RUN_FIX) ./$$test ; \

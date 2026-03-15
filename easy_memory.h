@@ -351,7 +351,10 @@ EM_STATIC_ASSERT((EM_MAGIC != 0), "EM_MAGIC must be a non-zero value to ensure e
 /*
  * Constant: Minimum Exponent
  * Used to calculate minimum and maximum alignment limits based on pointer size.
-*/
+ * For test compatibility with 16-bit systems, we force EMMIN_EXPONENT to be at least 2, 
+ * so all the bits shinanigans with alignment encoding in size_and_alignment and other fields work properly.
+ * But it also means that on 16-bit systems, some part of memory will be wasted due to alignment requirements.
+*/ 
 #if defined(__GNUC__) || defined(__clang__)
 #   define EMMIN_EXPONENT (__builtin_ctz(sizeof(uintptr_t)))
 #else
@@ -495,38 +498,209 @@ EM_STATIC_ASSERT(EM_DEFAULT_ALIGNMENT <= EMMAX_ALIGNMENT, "EM_DEFAULT_ALIGNMENT 
 */
 #define block_data(block) ((void *)((uintptr_t)(block) + sizeof(Block)))
 
-/*
- * Memory block structure
- * Represents a chunk of memory and metadata for its management within the EM memory system
+
+
+
+
+/* ==============================================================================================
+ *  MEMORY LAYOUT: Block Metadata
+ * ==============================================================================================
+ *  The Block structure is the fundamental unit of memory management. It utilizes aggressive 
+ *  bit-packing and pointer tagging to maintain a minimal footprint (4 machine words).
+ *
+ *  [ WORD 0: size_and_alignment ] -> 64/32/16 bits (size_t)
+ *  ┌────────────────────────────────────────────────────────────────────────┬─────────────────┐
+ *  │                                  Size                                  │  Context Magic  │
+ *  │  [63/31/15 ....................................................... 5]  │    [4 .. 0]     │
+ *  └────────────────────────────────────────────────────────────────────────┴─────────────────┘
+ *    - Context Magic (5 bits): 
+ *        These 5 lowest bits are the secret sauce of ABI compatibility.
+ *        Their meaning strictly depends on WHAT this "Block" actually is:
+ *
+ *        ► IF IT'S A STANDARD BLOCK (Payload wrapper):
+ *          These 5 bits are ALWAYS ZERO (0b00000).
+ *          - Bits [4..3]: Zero due to internal size rounding (always a multiple of 4).
+ *          - Bits [2..0]: Zero because individual blocks DO NOT store their own alignment
+ *                         metadata (alignment is resolved dynamically via padding/addresses).
+ *          *Note: These 5 guaranteed zero bits are reserved for future sub-allocators (e.g. Slab).*
+ *
+ *        ► IF IT'S AN ARENA HEADER (Nested EM / Root EM masquerading as a Block):
+ *          - Bits [4..3]: Still Zero (arena capacity is also rounded).
+ *          - Bits [2..0]: Store the Arena's Baseline Alignment Exponent.
+ *                         True alignment = 2^(EMMIN_EXPONENT + Alignment).
+ *
+ *    - Size (N bits): Usable payload size of the block in bytes (shifted left by 3).
+ * 
+ *  [ WORD 1: prev ] -> 64/32/16 bits (Block pointer) - POINTER TAGGING ENABLED
+ *  ┌───────────────────────────────────────────────────────────────────┬──────────┬───────────┐
+ *  │                        Previous Block Address                     │   Color  │  Is Free  │
+ *  │                                                                   │  (LLRB)  │           │
+ *  │  [63/31/15 .................................................. 2]  │    [1]   │    [0]    │
+ *  └───────────────────────────────────────────────────────────────────┴──────────┴───────────┘
+ *    - Is Free (Bit 0): 1 if the block is currently FREE, 0 if OCCUPIED.
+ *    - Color   (Bit 1): 1 if BLACK, 0 if RED. Used for LLRB tree balancing AND Scratchpad detection.
+ *    - Address:         Pointer to the physically preceding Block in memory (masked with ~3).
+ *
+ *  [ WORD 2 & 3: union as ] -> 2 Machine Words - CONTEXT DEPENDENT
+ *  ┌──────────────────────────────────────────────────────────────────────────────────────────┐
+ *  │ IF FREE (as.free):                                                                       │
+ *  │ ┌────────────────────────────────────────┐ ┌───────────────────────────────────────────┐ │
+ *  │ │   Block *left_free  (LLRB Left Child)  │ │   Block *right_free  (LLRB Right Child)   │ │
+ *  │ │  [63/31/15 ....................... 3]  │ │  [63/31/15 .......................... 3]  │ │
+ *  │ └────────────────────────────────────────┘ └───────────────────────────────────────────┘ │
+ *  ├──────────────────────────────────────────────────────────────────────────────────────────┤
+ *  │ IF OCCUPIED (as.occupied):                                                               │
+ *  │ ┌────────────────────────────────────────┐ ┌───────────────────────────────────────────┐ │
+ *  │ │   EM *em  (Pointer to Owning Arena)    │ │ uintptr_t magic (XORed with Payload Ptr)  │ │
+ *  │ │  [63/31/15 ....................... 3]  │ │  [63/31/15 .......................... 3]  │ │
+ *  │ └────────────────────────────────────────┘ └───────────────────────────────────────────┘ │
+ *  └──────────────────────────────────────────────────────────────────────────────────────────┘
+ * ==============================================================================================
+ * 
+ *  [63/31/15 ......................................................... 3] 
  */
 struct Block {
-    size_t size_and_alignment;   // Size of the data block.
-    Block *prev;                 // Pointer to the previous block in the global list, also stores flags via pointer tagging.
+    size_t size_and_alignment; // Packed: [Size][Reserved:2][Alignment:3]
+    Block *prev;               // Tagged: [Physical Prev Ptr][Color:1][Is_Free:1]
 
     union {
         struct {
-            Block *left_free;     // Left child in red-black tree
-            Block *right_free;    // Right child in red-black tree
+            Block *left_free;  // LLRB-Tree left child (Valid only if Is_Free == 1)
+            Block *right_free; // LLRB-Tree right child (Valid only if Is_Free == 1)
         } free;
         struct {
-            EM *em;               // Pointer to the EM instance that allocated this block
-            uintptr_t magic;      // Magic number for validation random pointer
+            EM *em;            // Parent Arena pointer (Valid only if Is_Free == 0)
+            uintptr_t magic;   // XOR payload validation (Valid only if Is_Free == 0)
         } occupied;
     } as;
 };
 
-/*
- * Bump allocator structure
- * A simple allocator that allocates memory linearly from a pre-allocated block
+
+
+
+
+/* ==============================================================================================
+ *  MEMORY LAYOUT: Easy Memory (EM) Header (ABI Compatible with Block)
+ * ==============================================================================================
+ *  The EM structure acts as the root allocator context. Crucially, it is strictly ABI-compatible 
+ *  with the 'Block' structure. This allows nested EM instances to masquerade as standard occupied 
+ *  blocks to their parent arena, achieving zero-cost parent tracking.
+ *
+ *  [ WORD 0: as.self.capacity_and_alignment ] -> Maps to Block.size_and_alignment
+ *  ┌──────────────────────────────────────────────────────────────────────────┬───────────────┐
+ *  │                               Total Capacity                             │ Base Alignmnt │
+ *  │  [63/31/15 ......................................................... 3]  │    [2..0]     │
+ *  └──────────────────────────────────────────────────────────────────────────┴───────────────┘
+ *    - Alignment (3 bits): Exponent offset. True alignment = 2^(EMMIN_EXPONENT + Alignment).
+ *    - Capacity  (N bits): Total usable payload capacity of the arena (shifted left by 3).
+ *                          Note: Unlike Block.size, bits [4..3] are NOT reserved here.
+ * 
+ *  [ WORD 1: as.self.prev ] -> Maps to Block.prev
+ *  ┌──────────────────────────────────────────────────────────────────────────────────────────┐
+ *  │                         Previous Block Address (Physical Neighbor)                       │
+ *  │  [63/31/15 ......................................................................... 0]  │
+ *  └──────────────────────────────────────────────────────────────────────────────────────────┘
+ *    - Address: Pointer to the physically preceding Block (if this EM is nested/scratch). 
+ *               For root arenas (dynamic or static top-level), this is NULL.
+ *
+ *  [ WORD 2: as.self.tail ] -> Maps to Block.as.occupied.em (POINTER TAGGING ENABLED)
+ *  ┌───────────────────────────────────────────────────────────────────────┬────────┬─────────┐
+ *  │                        Tail Block Address                             │   Is   │   Is    │
+ *  │                                                                       │ Nested │ Dynamic │
+ *  │  [63/31/15 ...................................................... 2]  │   [1]  │   [0]   │
+ *  └───────────────────────────────────────────────────────────────────────┴────────┴─────────┘
+ *    - Is Dynamic (Bit 0): 1 if EM was allocated via system malloc() (needs system free()).
+ *    - Is Nested  (Bit 1): 1 if EM was carved out of a parent EM instance.
+ *    - Tail Address:       Pointer to the last logical block in the active arena space.
+ *
+ *  [ WORD 3: as.self.free_blocks ] -> Maps to Block.as.occupied.magic (POINTER TAGGING ENABLED)
+ *  ┌────────────────────────────────────────────────────────────────────────┬─────────┬───────┐
+ *  │                      LLRB Tree Root Address (Free Blocks)              │   Has   │ Magic │
+ *  │                                                                        │ Scratch │ Zero  │
+ *  │  [63/31/15 ....................................................... 2]  │   [1]   │  [0]  │
+ *  └────────────────────────────────────────────────────────────────────────┴─────────┴───────┘
+ *    - Magic Zero  (Bit 0): ALWAYS 0. Critical for the 'Magic LSB Padding Detector' logic to 
+ *                           distinguish this pointer from a padding offset (which ends in 1).
+ *    - Has Scratch (Bit 1): 1 if the extreme tail block is currently reserved as a Scratchpad.
+ *    - Root Address:       Pointer to the root node of the free blocks LLRB tree.
+ * ==============================================================================================
+ */
+struct EM {
+    union {
+        Block block_representation;         // Standard ABI compatibility layer
+        struct {
+            size_t capacity_and_alignment;  // Packed: [Capacity][Alignment:3]
+            Block *prev;                    // Physical Prev Ptr (NULL if root arena)
+            Block *tail;                    // Tagged: [Tail Ptr][Is_Nested:1][Is_Dynamic:1]
+            Block *free_blocks;             // Tagged: [LLRB Root Ptr][Has_Scratch:1][Magic_Zero:1]
+        } self;
+    } as;
+};
+
+EM_STATIC_ASSERT(offsetof(EM, as.self.capacity_and_alignment) == offsetof(Block, size_and_alignment), 
+    EM_capacity_offset_mismatch);
+EM_STATIC_ASSERT(offsetof(EM, as.self.prev) == offsetof(Block, prev), 
+    EM_prev_offset_mismatch);
+EM_STATIC_ASSERT(offsetof(EM, as.self.tail) == offsetof(Block, as.occupied.em), 
+    EM_tail_offset_mismatch);
+EM_STATIC_ASSERT((sizeof(EM) == sizeof(Block)), Size_mismatch_between_Bump_and_Block);
+
+
+
+
+
+/* ==============================================================================================
+ *  MEMORY LAYOUT: Bump Allocator Header (ABI Compatible with Block)
+ * ==============================================================================================
+ *  The Bump allocator is a lightning-fast, linear memory pool. Like the EM header, it is 
+ *  strictly ABI-compatible with the 'Block' structure. To the parent arena, a Bump instance 
+ *  is indistinguishable from a standard occupied memory block.
+ *
+ *  [ WORD 0: as.self.capacity ] -> Maps to Block.size_and_alignment
+ *  ┌───────────────────────────────────────────────────────────────────┬──────────┬───────────┐
+ *  │                               Capacity                            │ Reserved │ Align/Res │
+ *  │  [63/31/15 .................................................. 5]  │  [4..3]  │  [2..0]   │
+ *  └───────────────────────────────────────────────────────────────────┴──────────┴───────────┘
+ *    - Align/Res (3 bits): Always 0. Bump allocators rely on the parent EM's baseline alignment.
+ *                          Unlike EM headers, Bump headers DO NOT store an alignment exponent here.
+ *    - Reserved  (2 bits): Always 0. Because a Bump allocator is allocated from the parent arena
+ *                          as a standard block, its total size is inherently rounded to a multiple
+ *                          of 4, guaranteeing these bits remain empty.
+ *    - Capacity  (N bits): Total payload capacity carved out from the parent (shifted left by 3).
+ * 
+ *  [ WORD 1: as.self.prev ] -> Maps to Block.prev
+ *  ┌──────────────────────────────────────────────────────────────────────────────────────────┐
+ *  │                         Previous Block Address (Physical Neighbor)                       │
+ *  │  [63/31/15 ......................................................................... 0]  │
+ *  └──────────────────────────────────────────────────────────────────────────────────────────┘
+ *    - Address: Pointer to the physically preceding Block (if any). 
+ *               Essential for O(1) merging when the Bump allocator is destroyed.
+ *
+ *  [ WORD 2: as.self.em ] -> Maps to Block.as.occupied.em (NO POINTER TAGGING NEEDED)
+ *  ┌──────────────────────────────────────────────────────────────────────────────────────────┐
+ *  │                               Parent EM Address                                          │
+ *  │  [63/31/15 ......................................................................... 0]  │
+ *  └──────────────────────────────────────────────────────────────────────────────────────────┘
+ *    - Parent Addr: Direct pointer to the Easy Memory instance that created this Bump allocator.
+ *
+ *  [ WORD 3: as.self.offset ] -> Maps to Block.as.occupied.magic (OFFSET TRACKING)
+ *  ┌──────────────────────────────────────────────────────────────────────────────────────────┐
+ *  │                               Current Allocation Offset                                  │
+ *  │  [63/31/15 ......................................................................... 0]  │
+ *  └──────────────────────────────────────────────────────────────────────────────────────────┘
+ *    - Offset: Byte offset from the start of the Bump header to the next available free byte.
+ *              Initialized to sizeof(Bump) (4 machine words).
+ *              Advances linearly with every allocation.
+ * ==============================================================================================
  */
 struct Bump {
     union {
-        Block block_representation;  // Block representation for compatibility
+        Block block_representation;  // Standard ABI compatibility layer
         struct {
-            size_t capacity;         // Total capacity of the bump allocator
-            Block *prev;             // Pointer to the previous block in the global list, need for compatibility with block struct layout
-            EM *em;                  // Pointer to the EM instance that allocated this block
-            size_t offset;           // Current offset for allocations within the bump allocator
+            size_t capacity;         // Packed: [Capacity][Reserved:5] (Always 0 alignment bits)
+            Block *prev;             // Physical Prev Ptr for merging
+            EM *em;                  // Direct Parent Pointer (O(1) access)
+            size_t offset;           // Linear allocation cursor
         } self;
     } as;
 };
@@ -539,29 +713,7 @@ EM_STATIC_ASSERT(offsetof(Bump, as.self.em) == offsetof(Block, as.occupied.em),
     Bump_em_offset_mismatch);
 EM_STATIC_ASSERT((sizeof(Bump) == sizeof(Block)), Size_mismatch_between_Bump_and_Block);
 
-/*
- * Easy Memory structure
- * Manages a pool of memory, block allocation, and block states
- */
-struct EM {
-    union {
-        Block block_representation;         // Block representation for compatibility
-        struct {
-            size_t capacity_and_alignment;  // Total capacity of the easy memory
-            Block *prev;                    // Pointer to the previous block in the global list, need for compatibility with block struct layout
-            Block *tail;                    // Pointer to the last block in the global list, also stores is_dynamic flag via pointer tagging
-            Block *free_blocks;             // Pointer to the tree of free blocks and scratchpad usage flag via pointer tagging
-        } self;
-    } as;
-};
 
-EM_STATIC_ASSERT(offsetof(EM, as.self.capacity_and_alignment) == offsetof(Block, size_and_alignment), 
-    EM_capacity_offset_mismatch);
-EM_STATIC_ASSERT(offsetof(EM, as.self.prev) == offsetof(Block, prev), 
-    EM_prev_offset_mismatch);
-EM_STATIC_ASSERT(offsetof(EM, as.self.tail) == offsetof(Block, as.occupied.em), 
-    EM_tail_offset_mismatch);
-EM_STATIC_ASSERT((sizeof(EM) == sizeof(Block)), Size_mismatch_between_Bump_and_Block);
 
 
 
@@ -653,6 +805,9 @@ void *em_bump_alloc_aligned(Bump *EM_RESTRICT bump, size_t size, size_t alignmen
 EMDEF void em_bump_trim(Bump *EM_RESTRICT bump);
 EMDEF void em_bump_reset(Bump *EM_RESTRICT bump);
 EMDEF void em_bump_destroy(Bump *bump);
+
+
+
 
 #ifdef EASY_MEMORY_IMPLEMENTATION
 
@@ -2684,7 +2839,7 @@ EMDEF EM *em_create_static_aligned(void *EM_RESTRICT memory, size_t size, size_t
     /*
      * Magic LSB Padding Detector
      *
-     *What is this for?
+     * What is this for?
      * One of the core goals of easy_memory is Zero-Cost Parent Tracking. We need to find 
      * the 'EM' header starting from a 'Block' pointer (especially the first block) 
      * without storing an explicit 8-byte 'parent' pointer in every single block.
@@ -2713,6 +2868,20 @@ EMDEF EM *em_create_static_aligned(void *EM_RESTRICT memory, size_t size, size_t
      * we can instantly distinguish between:
      *   - 0: We are looking at the 'free_blocks' pointer (EM is immediately adjacent).
      *   - 1: We are looking at our custom padding offset (EM is 'offset' bytes away).
+     *
+     * ---------------------------------------------------------------------------------
+     *  Memory layout just before the first block:
+     *  [ ... EM Header ... ] [ ... Alignment Padding Gap ... ] [ FIRST BLOCK ]
+     *                                                        ^
+     *                                                        |
+     *  detector_spot (Last word of padding) ─────────────────┘
+     *  ┌────────────────────────────────────────────────────────────────────┬───────┐
+     *  │                  Offset to EM Header (in bytes)                    │  LSB  │
+     *  │  [63/31/15 ................................................... 1]  │  [0]  │
+     *  └────────────────────────────────────────────────────────────────────┴───────┘
+     *    - LSB (Bit 0): ALWAYS 1. Differentiates this from a valid pointer.
+     *    - Offset:      Distance back to the EM struct (shifted right by 1 to read).
+     * ---------------------------------------------------------------------------------
     */
 
     uintptr_t aligned_block_start = align_up(aligned_addr + sizeof(Block) + sizeof(EM), alignment) - sizeof(Block);

@@ -405,6 +405,27 @@ EM_STATIC_ASSERT(EM_DEFAULT_ALIGNMENT <= EMMAX_ALIGNMENT, "EM_DEFAULT_ALIGNMENT 
 
 
 /*
+ * Constant: Alignment Shift
+ * Number of bits to shift to encode/decode alignment in size_and_alignment field.
+*/
+#define EMALIGNMENT_SHIFT      3
+
+/*
+ * Constant: Reserved Shift
+ * Number of bits reserved for future use in size_and_alignment field.
+ * Currently reserved for potential sub-allocator metadata (e.g., Slab allocator).
+*/
+#define EMRESERVED_SHIFT       2
+
+/*
+ * Constant: Total Reserved Shift
+ * Total number of bits reserved in size_and_alignment field (alignment + reserved).
+*/
+#define EMALL_RESERVED_SHIFT   (EMALIGNMENT_SHIFT + EMRESERVED_SHIFT)
+
+
+
+/*
  * Constant: IS_FREE Mask
  * Mask to check if a block is free.
 */
@@ -509,10 +530,10 @@ EM_STATIC_ASSERT(EM_DEFAULT_ALIGNMENT <= EMMAX_ALIGNMENT, "EM_DEFAULT_ALIGNMENT 
  *
  *  [ WORD 0: size_and_alignment ] -> 64/32/16 bits (size_t)
  *  ┌────────────────────────────────────────────────────────────────────────┬─────────────────┐
- *  │                                  Size                                  │  Context Magic  │
+ *  │                                  Size                                  │    Reserved     │
  *  │  [63/31/15 ....................................................... 5]  │    [4 .. 0]     │
  *  └────────────────────────────────────────────────────────────────────────┴─────────────────┘
- *    - Context Magic (5 bits): 
+ *    - Reserved (5 bits): 
  *        These 5 lowest bits are the secret sauce of ABI compatibility.
  *        Their meaning strictly depends on WHAT this "Block" actually is:
  *
@@ -921,43 +942,67 @@ static inline void set_alignment(Block *block, size_t alignment) {
 static inline size_t get_size(const Block *block) {
     EM_ASSERT((block != NULL) && "Internal Error: 'get_size' called on NULL block");
 
-    return block->size_and_alignment >> 3;
+    return (block->size_and_alignment >> EMALL_RESERVED_SHIFT) << EMRESERVED_SHIFT; // Shift right to remove alignment and reserved bits, then shift left to get actual size in bytes
 }
 
 /*
  * Set size for block
  * Updates the size information in the block's size_and_alignment field
+ * 
+ * Note on granularity: Due to internal alignment requirements (EMMIN_ALIGNMENT), 
+ * the physical size of any block is guaranteed to be a multiple of at least 4 bytes. 
+ * This allows us to safely shift out the 2 least significant bits of the size (which 
+ * are always zero) to expand the reserved bit space in the header without losing capacity.
+ * 
  * Valid size range (limited by 3-bit reserved for alignment/flags):
- *  -- 32-bit system: [0] U [EM_MIN_BUFFER_SIZE ... 512 MiB] (2^29 bytes)
- *  -- 64-bit system: [0] U [EM_MIN_BUFFER_SIZE ... 2 EiB]   (2^61 bytes)
+ *  -- 32-bit system: [0] U [EM_MIN_BUFFER_SIZE ... 512 MiB] (2^29 bytes, step 4/8 bytes)
+ *  -- 64-bit system: [0] U [EM_MIN_BUFFER_SIZE ... 2 EiB]   (2^61 bytes, step 4/8 bytes)
  */
 static inline void set_size(Block *block, size_t size) {
     EM_ASSERT((block != NULL)        && "Internal Error: 'set_size' called on NULL block");
     EM_ASSERT((size <= EMMAX_SIZE)   && "Internal Error: 'set_size' called on too big size");
+    EM_ASSERT(((size & 3) == 0)      && "Internal Error: 'set_size' called on block size that is not a multiple of 4");
 
     /*
      * Why size limit?
-     * Since we utilize 3 bits of size_and_alignment field for alignment/flags, we have the remaining bits available for size.
+     * Since we utilize EMALL_RESERVED_SHIFT (5) bits of the size_and_alignment field 
+     * for metadata, we have the remaining bits available for size.
      * 
-     * On 32-bit systems, size_t is 4 bytes (32 bits), so we have 29 bits left for size (32 - 3 = 29).
-     * This gives us a maximum size of 2^29 - 1 = 536,870,911 bytes (approximately 512 MiB).
-     * In 32-bit systems, where maximum addressable memory in user space is 2-3 GiB, this limitation is acceptable.
-     * Bigger size is not practical since we cannot allocate a contiguous memory block that **literally** 30%+ of all accessible memory, 
-     *  malloc is extremely likely to return NULL due to heap fragmentation.
-     * Like, what you even gonna do with 1GB of contiguous memory, when even all operating system use ~1-2GB?
-     * Play "Bad Apple" 8K 120fps via raw frames?
+     * How we save space:
+     * Because the allocator enforces a minimum alignment (at least 4 bytes), every block's 
+     * physical size is guaranteed to be a multiple of 4. This means the 2 least significant 
+     * bits of the size are always zero (e.g., 0b...00).
+     * By discarding these two zeroes (>> EMRESERVED_SHIFT) before shifting the size into 
+     * position (<< EMALL_RESERVED_SHIFT), we effectively only "lose" 3 bits of capacity, 
+     * while freeing up 5 bits for metadata in the header.
+     * 
+     * (For an example of how these reserved bits are utilized, see the comments 
+     * for 'em_set_capacity', where the parent EM stores its alignment exponent).
+     * 
+     * On 32-bit systems, size_t is 4 bytes (32 bits).
+     * We have 27 bits left to store the compressed size (32 - 5 = 27).
+     * When restored (shifted left by 2), the maximum representable capacity is:
+     * ((2^27) - 1) * 4 = 536,870,908 bytes (approximately 512 MiB).
+     * In 32-bit systems, where maximum addressable memory in user space is 2-3 GiB, 
+     * this limitation is acceptable. Finding a contiguous 512 MiB block is practically 
+     * impossible anyway due to heap fragmentation. Like, what are you even gonna do 
+     * with 1GB of contiguous memory? Play "Bad Apple" 8K 120fps via raw frames?
      * 
      * On the other hand,
      * 
-     * On 64-bit systems, size_t is 8 bytes (64 bits), so we have 61 bits left for size (64 - 3 = 61).
-     * This gives us a maximum size of 2^61 - 1 = 2,305,843,009,213,693,951 bytes (approximately 2 EiB).
-     * In 64-bit systems, this limitation is practically non-existent since current hardware and OS limitations are far below this threshold.
+     * On 64-bit systems, size_t is 8 bytes (64 bits).
+     * We have 59 bits left for the compressed size (64 - 5 = 59).
+     * When restored, the maximum capacity is ((2^59) - 1) * 4 bytes (approximately 2 EiB).
+     * In 64-bit systems, this limitation is practically non-existent since current 
+     * hardware and OS limitations are far below this threshold.
      * 
-     * Conclusion: This limitation is a deliberate trade-off that avoids any *real* constraints on both 32-bit and 64-bit systems while optimizing memory usage.
+     * Conclusion: This limitation is a deliberate trade-off that avoids any *real* 
+     * constraints on both 32-bit and 64-bit systems while optimizing memory usage 
+     * for advanced metadata packing.
     */
 
     size_t alignment_piece = block->size_and_alignment & EMALIGNMENT_MASK; // Preserve current alignment bits
-    block->size_and_alignment = (size << 3) | alignment_piece; // Set new size while preserving alignment bits
+    block->size_and_alignment = ((size >> EMRESERVED_SHIFT) << EMALL_RESERVED_SHIFT) | alignment_piece; // Set new size while preserving alignment bits
 }
 
 
@@ -1421,23 +1466,20 @@ static inline void em_set_free_blocks(EM *em, Block *block) {
 
 /*
  * Get capacity from easy memory
- * Extracts the capacity information stored in the easy memory's as.block_representation field
+ * Extracts the capacity information stored in the easy memory's as.self.capacity_and_alignment field
  */
 static inline size_t em_get_capacity(const EM *em) {
     EM_ASSERT(em != NULL && "Internal Error: 'em_get_capacity' called on NULL easy memory");
 
-    /*
-     * What is happening here?
-     * By design, the Easy Memory struct if fully ABI compatible with Block struct, 
-     *  we can safely use dedicated Block functions by treating EM as a Block.
-    */
-
-    return get_size(&(em->as.block_representation));
+    return em->as.self.capacity_and_alignment >> EMALIGNMENT_SHIFT; // Shift right to remove alignment bits, giving us the actual size in bytes
 }
 
 /*
  * Set capacity for easy memory
- * Updates the capacity information in the easy memory's as.block_representation field
+ * Updates the capacity information in the easy memory's as.self.capacity_and_alignment field
+ * Valid size range (limited by 3-bit reserved for alignment/flags):
+ *  -- 32-bit system: [0] U [EM_MIN_BUFFER_SIZE ... 512 MiB] (2^29 bytes)
+ *  -- 64-bit system: [0] U [EM_MIN_BUFFER_SIZE ... 2 EiB]   (2^61 bytes)
  */
 static inline void em_set_capacity(EM *em, size_t size) {
     EM_ASSERT((em != NULL)                              && "Internal Error: 'em_set_capacity' called on NULL easy memory");
@@ -1445,12 +1487,28 @@ static inline void em_set_capacity(EM *em, size_t size) {
     EM_ASSERT((size <= EMMAX_SIZE)                      && "Internal Error: 'em_set_capacity' called on too big size");
 
     /*
-     * What is happening here?
-     * By design, the Easy Memory struct if fully ABI compatible with Block struct, 
-     *  we can safely use dedicated Block functions by treating EM as a Block.
+     * Why size limit?
+     * Since we utilize 3 bits of capacity_and_alignment field for alignment, we have the remaining bits available for size.
+     * 
+     * On 32-bit systems, size_t is 4 bytes (32 bits), so we have 29 bits left for size (32 - 3 = 29).
+     * This gives us a maximum size of 2^29 - 1 = 536,870,911 bytes (approximately 512 MiB).
+     * In 32-bit systems, where maximum addressable memory in user space is 2-3 GiB, this limitation is acceptable.
+     * Bigger size is not practical since we cannot allocate a contiguous memory block that **literally** 30%+ of all accessible memory, 
+     *  malloc is extremely likely to return NULL due to heap fragmentation.
+     * Like, what you even gonna do with 1GB of contiguous memory, when even all operating system use ~1-2GB?
+     * Play "Bad Apple" 8K 120fps via raw frames?
+     * 
+     * On the other hand,
+     * 
+     * On 64-bit systems, size_t is 8 bytes (64 bits), so we have 61 bits left for size (64 - 3 = 61).
+     * This gives us a maximum size of 2^61 - 1 = 2,305,843,009,213,693,951 bytes (approximately 2 EiB).
+     * In 64-bit systems, this limitation is practically non-existent since current hardware and OS limitations are far below this threshold.
+     * 
+     * Conclusion: This limitation is a deliberate trade-off that avoids any *real* constraints on both 32-bit and 64-bit systems while optimizing memory usage.
     */
 
-    set_size(&(em->as.block_representation), size);
+    size_t alignment_piece = em->as.self.capacity_and_alignment & EMALIGNMENT_MASK; // Preserve current alignment bits
+    em->as.self.capacity_and_alignment = (size << EMALIGNMENT_SHIFT) | alignment_piece; // Set new size while preserving alignment bits
 }
 
 

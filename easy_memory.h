@@ -351,7 +351,7 @@ EM_STATIC_ASSERT((EM_MAGIC != 0), "EM_MAGIC must be a non-zero value to ensure e
  * Constant: Minimum Exponent
  * Used to calculate minimum and maximum alignment limits based on pointer size.
  * For test compatibility with 16-bit systems, we force EMMIN_EXPONENT to be at least 2, 
- * so all the bits shinanigans with alignment encoding in size_and_alignment and other fields work properly.
+ * so all the bits shinanigans with alignment encoding in capacity_and_alignment and other fields work properly.
  * But it also means that on 16-bit systems, some part of memory will be wasted due to alignment requirements.
 */ 
 #if defined(__GNUC__) || defined(__clang__)
@@ -392,34 +392,46 @@ EM_STATIC_ASSERT(EM_DEFAULT_ALIGNMENT <= EMMAX_ALIGNMENT, "EM_DEFAULT_ALIGNMENT 
 
 /*
  * Constant: Alignment Mask
- * Mask to extract alignment bits from size_and_alignment field.
+ * Mask to extract alignment bits from capacity_and_alignment field.
 */
-#define EMALIGNMENT_MASK     ((uintptr_t)7)
+#define EMALIGNMENT_MASK       ((uintptr_t)7)
+
+/*
+ * Constant: Capacity Mask
+ * Mask to extract capacity bits from capacity_and_alignment field.
+*/
+#define EMCAPACITY_MASK       (~(uintptr_t)7)
+
+
+/*
+ * Constant: Reserved Mask
+ * Mask to extract all reserved bits from size_and_reserved field.
+*/
+#define EMALL_RESERVED_MASK   ((uintptr_t)31)
 
 /*
  * Constant: Size Mask
- * Mask to extract size bits from size_and_alignment field.
+ * Mask to extract size bits from size_and_reserved field.
 */
-#define EMSIZE_MASK         (~(uintptr_t)7)
-
+#define EMSIZE_MASK           (~EMALL_RESERVED_MASK)
 
 
 /*
  * Constant: Alignment Shift
- * Number of bits to shift to encode/decode alignment in size_and_alignment field.
+ * Number of bits to shift to encode/decode alignment in size_and_reserved field.
 */
 #define EMALIGNMENT_SHIFT      3
 
 /*
  * Constant: Reserved Shift
- * Number of bits reserved for future use in size_and_alignment field.
+ * Number of bits reserved for future use in size_and_reserved field.
  * Currently reserved for potential sub-allocator metadata (e.g., Slab allocator).
 */
 #define EMRESERVED_SHIFT       2
 
 /*
  * Constant: Total Reserved Shift
- * Total number of bits reserved in size_and_alignment field (alignment + reserved).
+ * Total number of bits reserved in size_and_reserved field (alignment + reserved).
 */
 #define EMALL_RESERVED_SHIFT   (EMALIGNMENT_SHIFT + EMRESERVED_SHIFT)
 
@@ -528,7 +540,7 @@ EM_STATIC_ASSERT(EM_DEFAULT_ALIGNMENT <= EMMAX_ALIGNMENT, "EM_DEFAULT_ALIGNMENT 
  *  The Block structure is the fundamental unit of memory management. It utilizes aggressive 
  *  bit-packing and pointer tagging to maintain a minimal footprint (4 machine words).
  *
- *  [ WORD 0: size_and_alignment ] -> 64/32/16 bits (size_t)
+ *  [ WORD 0: size_and_reserved ] -> 64/32/16 bits (size_t)
  *  ┌────────────────────────────────────────────────────────────────────────┬─────────────────┐
  *  │                                  Size                                  │    Reserved     │
  *  │  [63/31/15 ....................................................... 5]  │    [4 .. 0]     │
@@ -580,7 +592,7 @@ EM_STATIC_ASSERT(EM_DEFAULT_ALIGNMENT <= EMMAX_ALIGNMENT, "EM_DEFAULT_ALIGNMENT 
  *  [63/31/15 ......................................................... 3] 
  */
 struct Block {
-    size_t size_and_alignment; // Packed: [Size][Reserved:2][Alignment:3]
+    size_t size_and_reserved; // Packed: [Size][Reserved:5]
     Block *prev;               // Tagged: [Physical Prev Ptr][Color:1][Is_Free:1]
 
     union {
@@ -606,7 +618,7 @@ struct Block {
  *  with the 'Block' structure. This allows nested EM instances to masquerade as standard occupied 
  *  blocks to their parent arena, achieving zero-cost parent tracking.
  *
- *  [ WORD 0: as.self.capacity_and_alignment ] -> Maps to Block.size_and_alignment
+ *  [ WORD 0: as.self.capacity_and_alignment ] -> Maps to Block.size_and_reserved
  *  ┌──────────────────────────────────────────────────────────────────────────┬───────────────┐
  *  │                               Total Capacity                             │ Base Alignmnt │
  *  │  [63/31/15 ......................................................... 3]  │    [2..0]     │
@@ -657,7 +669,7 @@ struct EM {
     } as;
 };
 
-EM_STATIC_ASSERT(offsetof(EM, as.self.capacity_and_alignment) == offsetof(Block, size_and_alignment), 
+EM_STATIC_ASSERT(offsetof(EM, as.self.capacity_and_alignment) == offsetof(Block, size_and_reserved), 
     EM_capacity_offset_mismatch);
 EM_STATIC_ASSERT(offsetof(EM, as.self.prev) == offsetof(Block, prev), 
     EM_prev_offset_mismatch);
@@ -676,7 +688,7 @@ EM_STATIC_ASSERT((sizeof(EM) == sizeof(Block)), Size_mismatch_between_Bump_and_B
  *  strictly ABI-compatible with the 'Block' structure. To the parent arena, a Bump instance 
  *  is indistinguishable from a standard occupied memory block.
  *
- *  [ WORD 0: as.self.capacity ] -> Maps to Block.size_and_alignment
+ *  [ WORD 0: as.self.capacity ] -> Maps to Block.size_and_reserved
  *  ┌───────────────────────────────────────────────────────────────────┬──────────┬───────────┐
  *  │                               Capacity                            │ Reserved │ Align/Res │
  *  │  [63/31/15 .................................................. 5]  │  [4..3]  │  [2..0]   │
@@ -725,7 +737,7 @@ struct Bump {
     } as;
 };
 
-EM_STATIC_ASSERT(offsetof(Bump, as.self.capacity) == offsetof(Block, size_and_alignment), 
+EM_STATIC_ASSERT(offsetof(Bump, as.self.capacity) == offsetof(Block, size_and_reserved), 
     Bump_capacity_offset_mismatch);
 EM_STATIC_ASSERT(offsetof(Bump, as.self.prev) == offsetof(Block, prev), 
     Bump_prev_offset_mismatch);
@@ -878,76 +890,47 @@ static inline size_t min_exponent_of(size_t num) {
     #endif
 }
 
+
+
 /*
- * Get alignment from block
- * Extracts the alignment information stored in the block's size_and_alignment field
+ * Get reserved bits from block
+ * Extracts the reserved bits information stored in the block's size_and_reserved field
  */
-static inline size_t get_alignment(const Block *block) {
-    EM_ASSERT((block != NULL) && "Internal Error: 'get_alignment' called on NULL block");
+static inline size_t get_reserved_bits(const Block *block) {
+    EM_ASSERT((block != NULL) && "Internal Error: 'get_reserved_bits' called on NULL block");
 
-    size_t exponent = (block->size_and_alignment & EMALIGNMENT_MASK) + EMMIN_EXPONENT; // Extract exponent and adjust by EMMIN_EXPONENT
-    size_t alignment = (size_t)1 << (exponent); // Calculate alignment as power of two
-
-    return alignment;
+    return (block->size_and_reserved & EMALL_RESERVED_MASK); // Extract reserved bits
 }
 
 /*
- * Set alignment for block
- * Updates the alignment information in the block's size_and_alignment field
- * Valid alignment range (power of two):
- *  -- 32 bit system: [4 ... 512]
- *  -- 64 bit system: [8 ... 1024]
+ * Set reserved bits for block
+ * Updates the reserved bits information in the block's size_and_reserved field
  */
-static inline void set_alignment(Block *block, size_t alignment) {
-    EM_ASSERT((block != NULL)                      && "Internal Error: 'set_alignment' called on NULL block");
-    EM_ASSERT(((alignment & (alignment - 1)) == 0) && "Internal Error: 'set_alignment' called on invalid alignment");
-    EM_ASSERT((alignment >= EMMIN_ALIGNMENT)         && "Internal Error: 'set_alignment' called on too small alignment");
-    EM_ASSERT((alignment <= EMMAX_ALIGNMENT)         && "Internal Error: 'set_alignment' called on too big alignment");
+static inline void set_reserved_bits(Block *block, size_t reserved_bits) {
+    EM_ASSERT((block != NULL)                        && "Internal Error: 'set_reserved_bits' called on NULL block");
+    EM_ASSERT((reserved_bits <= EMALL_RESERVED_MASK) && "Internal Error: 'set_reserved_bits' called on too big value");
 
-    /*
-     * How does that work?
-     * Alignment is always a power of two, so instead of storing the alignment directly and wasting full 4-8 bytes, we can represent it as 2^n.
-     * Since minimum alignment is 2^EMMIN_EXPONENT, we can store only the exponent minus EMMIN_EXPONENT in 3 bits(value 0-7).
-     * For example:
-     *  - On 32-bit system (EMMIN_EXPONENT = 2):
-     *       Alignment 4     ->  2^2  ->  2-2  ->  stored as 0
-     *       Alignment 8     ->  2^3  ->  3-2  ->  stored as 1
-     *       Alignment 16    ->  2^4  ->  4-2  ->  stored as 2
-     *       ... and so on up to
-     *       Alignment 512   ->  2^9  ->  9-2  ->  stored as 7
-     * 
-     *  - On 64-bit system (EMMIN_EXPONENT = 3):
-     *       Alignment 8     ->  2^3  ->  3-3  ->  stored as 0
-     *       Alignment 16    ->  2^4  ->  4-3  ->  stored as 1
-     *       Alignment 32    ->  2^5  ->  5-3  ->  stored as 2
-     *       ... and so on up to 
-     *       Alignment 1024  -> 2^10  -> 10-3  ->  stored as 7
-     * This way, we efficiently use only 3 bits to cover the full range alignments that could be potentially used within the size_and_alignment field.
-    */ 
-    
-    size_t exponent = min_exponent_of(alignment >> EMMIN_EXPONENT); // Calculate exponent from alignment
+    size_t reserved = block->size_and_reserved & EMALL_RESERVED_MASK; // Preserve current reserved bits
+    block->size_and_reserved = block->size_and_reserved ^ reserved; // Clear current reserved bits
 
-    size_t spot = block->size_and_alignment & EMALIGNMENT_MASK; // Preserve current alignment bits
-    block->size_and_alignment = block->size_and_alignment ^ spot; // Clear current alignment bits
-
-    block->size_and_alignment = block->size_and_alignment | exponent;  // Set new alignment bits
+    block->size_and_reserved = block->size_and_reserved | reserved_bits;  // Set new reserved bits
 }
 
 
 
 /*
  * Get size from block
- * Extracts the size information stored in the block's size_and_alignment field
+ * Extracts the size information stored in the block's size_and_reserved field
  */
 static inline size_t get_size(const Block *block) {
     EM_ASSERT((block != NULL) && "Internal Error: 'get_size' called on NULL block");
 
-    return (block->size_and_alignment >> EMALL_RESERVED_SHIFT) << EMRESERVED_SHIFT; // Shift right to remove alignment and reserved bits, then shift left to get actual size in bytes
+    return (block->size_and_reserved >> EMALL_RESERVED_SHIFT) << EMRESERVED_SHIFT; // Shift right to remove alignment and reserved bits, then shift left to get actual size in bytes
 }
 
 /*
  * Set size for block
- * Updates the size information in the block's size_and_alignment field
+ * Updates the size information in the block's size_and_reserved field
  * 
  * Note on granularity: Due to internal alignment requirements (EMMIN_ALIGNMENT), 
  * the physical size of any block is guaranteed to be a multiple of at least 4 bytes. 
@@ -965,7 +948,7 @@ static inline void set_size(Block *block, size_t size) {
 
     /*
      * Why size limit?
-     * Since we utilize EMALL_RESERVED_SHIFT (5) bits of the size_and_alignment field 
+     * Since we utilize EMALL_RESERVED_SHIFT (5) bits of the size_and_reserved field 
      * for metadata, we have the remaining bits available for size.
      * 
      * How we save space:
@@ -1001,8 +984,8 @@ static inline void set_size(Block *block, size_t size) {
      * for advanced metadata packing.
     */
 
-    size_t alignment_piece = block->size_and_alignment & EMALIGNMENT_MASK; // Preserve current alignment bits
-    block->size_and_alignment = ((size >> EMRESERVED_SHIFT) << EMALL_RESERVED_SHIFT) | alignment_piece; // Set new size while preserving alignment bits
+    size_t alignment_piece = block->size_and_reserved & EMALIGNMENT_MASK; // Preserve current alignment bits
+    block->size_and_reserved = ((size >> EMRESERVED_SHIFT) << EMALL_RESERVED_SHIFT) | alignment_piece; // Set new size while preserving alignment bits
 }
 
 
@@ -1515,38 +1498,58 @@ static inline void em_set_capacity(EM *em, size_t size) {
 
 /*
  * Get alignment from easy memory
- * Extracts the alignment information stored in the easy memory's as.block_representation field
+ * Extracts the alignment information stored in the easy memory's as.self.capacity_and_alignment field
  */
 static inline size_t em_get_alignment(const EM *em) {
     EM_ASSERT((em != NULL) && "Internal Error: 'em_get_alignment' called on NULL easy memory");
-    /*
-     * What is happening here?
-     * By design, the Easy Memory struct if fully ABI compatible with Block struct, 
-     *  we can safely use dedicated Block functions by treating EM as a Block.
-    */
 
-    return get_alignment(&(em->as.block_representation));
+    size_t exponent = (em->as.self.capacity_and_alignment & EMALIGNMENT_MASK) + EMMIN_EXPONENT; // Extract exponent and adjust by EMMIN_EXPONENT
+    size_t alignment = (size_t)1 << (exponent); // Calculate alignment as power of two
+
+    return alignment;
 }
 
 /*
  * Set alignment for easy memory
- * Updates the alignment information in the easy memory's as.block_representation field
+ * Updates the alignment information in the easy memory's as.self.capacity_and_alignment field
+ * Valid alignment range (power of two):
+ *  -- 32 bit system: [4 ... 512]
+ *  -- 64 bit system: [8 ... 1024]
  */
 static inline void em_set_alignment(EM *em, size_t alignment) {
     EM_ASSERT((em != NULL)                         && "Internal Error: 'em_set_alignment' called on NULL easy memory");
     EM_ASSERT(((alignment & (alignment - 1)) == 0) && "Internal Error: 'em_set_alignment' called on invalid alignment");
-    EM_ASSERT((alignment >= EMMIN_ALIGNMENT)         && "Internal Error: 'em_set_alignment' called on too small alignment");
-    EM_ASSERT((alignment <= EMMAX_ALIGNMENT)         && "Internal Error: 'em_set_alignment' called on too big alignment");
+    EM_ASSERT((alignment >= EMMIN_ALIGNMENT)       && "Internal Error: 'em_set_alignment' called on too small alignment");
+    EM_ASSERT((alignment <= EMMAX_ALIGNMENT)       && "Internal Error: 'em_set_alignment' called on too big alignment");
     
     /*
-     * What is happening here?
-     * By design, the Easy Memory struct if fully ABI compatible with Block struct, 
-     *  we can safely use dedicated Block functions by treating EM as a Block.
-    */
+     * How does that work?
+     * Alignment is always a power of two, so instead of storing the alignment directly and wasting full 4-8 bytes, we can represent it as 2^n.
+     * Since minimum alignment is 2^EMMIN_EXPONENT, we can store only the exponent minus EMMIN_EXPONENT in 3 bits(value 0-7).
+     * For example:
+     *  - On 32-bit system (EMMIN_EXPONENT = 2):
+     *       Alignment 4     ->  2^2  ->  2-2  ->  stored as 0
+     *       Alignment 8     ->  2^3  ->  3-2  ->  stored as 1
+     *       Alignment 16    ->  2^4  ->  4-2  ->  stored as 2
+     *       ... and so on up to
+     *       Alignment 512   ->  2^9  ->  9-2  ->  stored as 7
+     * 
+     *  - On 64-bit system (EMMIN_EXPONENT = 3):
+     *       Alignment 8     ->  2^3  ->  3-3  ->  stored as 0
+     *       Alignment 16    ->  2^4  ->  4-3  ->  stored as 1
+     *       Alignment 32    ->  2^5  ->  5-3  ->  stored as 2
+     *       ... and so on up to 
+     *       Alignment 1024  -> 2^10  -> 10-3  ->  stored as 7
+     * This way, we efficiently use only 3 bits to cover the full range alignments that could be potentially used within the capacity_and_alignment field.
+    */ 
+    
+    size_t exponent = min_exponent_of(alignment >> EMMIN_EXPONENT); // Calculate exponent from alignment
 
-    set_alignment(&(em->as.block_representation), alignment);
+    size_t spot = em->as.self.capacity_and_alignment & EMALIGNMENT_MASK; // Preserve current alignment bits
+    em->as.self.capacity_and_alignment = em->as.self.capacity_and_alignment ^ spot; // Clear current alignment bits
+
+    em->as.self.capacity_and_alignment = em->as.self.capacity_and_alignment | exponent;  // Set new alignment bits
 }
-
 
 
 /*
@@ -1733,7 +1736,7 @@ static inline Block *create_block(void *point) {
     
     Block *block = (Block *)point;
     
-    block->size_and_alignment = 0;
+    block->size_and_reserved = 0;
     block->prev = NULL;
 
     // Initialize block metadata

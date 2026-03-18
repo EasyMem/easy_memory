@@ -38,7 +38,6 @@
  *  SYSTEM & LINKAGE:
  *    #define EM_NO_MALLOC         // Disable stdlib dependencies (Bare Metal mode)
  *    #define EM_STATIC            // Make all functions static (Private linkage)
- *    #define EM_RESTRICT          // Override 'restrict' keyword definition
  *    #define EM_RESTRICT          // Manual override for 'restrict' keyword definition
  *    #define EM_NO_ATTRIBUTES     // Disable all compiler-specific attributes
  *
@@ -2397,6 +2396,47 @@ static void *alloc_in_tail_full(EM *em, size_t size, size_t alignment) {
     return (void *)aligned_data_ptr;
 }
 
+typedef void *(*AllocFunc)(EM *EM_RESTRICT, size_t);
+
+/*
+ * Internal memory context creation core
+ * Orchestrates the allocation and initialization of a sub-em (nested or scratch).
+ * Uses function pointer injection (allocator) to decouple the memory sourcing 
+ * strategy from the complex EM header construction and ABI masquerading logic.
+ * Returns pointer to the initialized EM instance, or NULL on failure.
+ */
+static inline EM *create_nested_aligned_internal(EM *parent_em, size_t size, size_t alignment, AllocFunc allocator) {
+    EM_CHECK((size >= EMBLOCK_MIN_SIZE)          , NULL, "Internal Error: 'create_nested_aligned_internal' called with too small size");
+    EM_CHECK((size <= EMMAX_SIZE)                , NULL, "Internal Error: 'create_nested_aligned_internal' called with too big size");
+    EM_CHECK(((alignment & (alignment - 1)) == 0), NULL, "Internal Error: 'create_nested_aligned_internal' called with invalid alignment");
+    EM_CHECK((alignment >= EMMIN_ALIGNMENT)      , NULL, "Internal Error: 'create_nested_aligned_internal' called with too small alignment");
+    EM_CHECK((alignment <= EMMAX_ALIGNMENT)      , NULL, "Internal Error: 'create_nested_aligned_internal' called with too big alignment");
+
+    void *data = allocator(parent_em, size);  // Allocate memory from the parent easy memory
+    if (!data) return NULL;
+
+    Block *block = NULL;
+
+    uintptr_t *spot_before_user_data = (uintptr_t *)(void *)((char *)data - sizeof(uintptr_t));
+    uintptr_t check = *spot_before_user_data ^ (uintptr_t)data;
+    if (check == (uintptr_t)EM_MAGIC) {
+        block = (Block *)(void *)((char *)data - sizeof(Block));
+    }
+    // LCOV_EXCL_START
+    else {
+        block = (Block *)check;
+    }
+    // LCOV_EXCL_STOP
+
+    Block *prev = get_prev(block);
+
+    EM *em = em_create_static_aligned((void *)block, size, alignment);
+    em_set_is_nested(em, true); // Mark the easy memory as nested
+    set_prev(block, prev);      // Restore the previous block link
+
+    return em;
+}
+
 
 
 
@@ -3193,35 +3233,8 @@ EMDEF void em_reset_zero(EM *EM_RESTRICT em) {
  */
 EMDEF EM *em_create_nested_aligned(EM *EM_RESTRICT parent_em, size_t size, size_t alignment) {
     EM_CHECK((parent_em != NULL)                 , NULL, "Internal Error: 'em_create_nested_aligned' called with NULL parent easy memory");
-    EM_CHECK((size >= EMBLOCK_MIN_SIZE)          , NULL, "Internal Error: 'em_create_nested_aligned' called with too small size");
-    EM_CHECK((size <= EMMAX_SIZE)                , NULL, "Internal Error: 'em_create_nested_aligned' called with too big size");
-    EM_CHECK(((alignment & (alignment - 1)) == 0), NULL, "Internal Error: 'em_create_nested_aligned' called with invalid alignment");
-    EM_CHECK((alignment >= EMMIN_ALIGNMENT)      , NULL, "Internal Error: 'em_create_nested_aligned' called with too small alignment");
-    EM_CHECK((alignment <= EMMAX_ALIGNMENT)      , NULL, "Internal Error: 'em_create_nested_aligned' called with too big alignment");
 
-    void *data = em_alloc(parent_em, size);  // Allocate memory from the parent easy memory
-    if (!data) return NULL;
-
-    Block *block = NULL;
-
-    uintptr_t *spot_before_user_data = (uintptr_t *)(void *)((char *)data - sizeof(uintptr_t));
-    uintptr_t check = *spot_before_user_data ^ (uintptr_t)data;
-    if (check == (uintptr_t)EM_MAGIC) {
-        block = (Block *)(void *)((char *)data - sizeof(Block));
-    }
-    // LCOV_EXCL_START
-    else {
-        block = (Block *)check;
-    }
-    // LCOV_EXCL_STOP
-
-    Block *prev = get_prev(block);
-
-    EM *em = em_create_static_aligned((void *)block, size, alignment);
-    em_set_is_nested(em, true); // Mark the easy memory as nested
-    set_prev(block, prev);      // Restore the previous block link
-
-    return em;
+    return create_nested_aligned_internal(parent_em, size, alignment, em_alloc);
 }
 
 /*
@@ -3321,19 +3334,10 @@ EMDEF EM *em_create_nested(EM *EM_RESTRICT parent_em, size_t size) {
 EMDEF EM *em_create_scratch_aligned(EM *EM_RESTRICT parent_em, size_t size, size_t alignment) {
     EM_CHECK((parent_em != NULL)                 , NULL, "Internal Error: 'em_create_scratch_aligned' called with NULL parent easy memory");
     EM_CHECK((!em_get_has_scratch(parent_em))    , NULL, "Internal Error: 'em_create_scratch_aligned' called when scratch already allocated in parent");
-    EM_CHECK((size >= EMBLOCK_MIN_SIZE)          , NULL, "Internal Error: 'em_create_scratch_aligned' called with too small size");
-    EM_CHECK((size <= EMMAX_SIZE)                , NULL, "Internal Error: 'em_create_scratch_aligned' called with too big size");
-    EM_CHECK(((alignment & (alignment - 1)) == 0), NULL, "Internal Error: 'em_create_scratch_aligned' called with invalid alignment");
-    EM_CHECK((alignment >= EMMIN_ALIGNMENT)      , NULL, "Internal Error: 'em_create_scratch_aligned' called with too small alignment");
-    EM_CHECK((alignment <= EMMAX_ALIGNMENT)      , NULL, "Internal Error: 'em_create_scratch_aligned' called with too big alignment");
-        
-    void *data = em_alloc_scratch_aligned(parent_em, size, alignment);  // Allocate memory from the parent easy memory scratch
-    if (!data) return NULL;
-
-    Block *block = (Block *)(void *)((char *)data - sizeof(Block)); // Scratch block is always with no padding before user data
     
-    EM *em = em_create_static_aligned((void *)block, size, alignment);
-    em_set_is_nested(em, true); // Mark the easy memory as nested
+    EM *em = create_nested_aligned_internal(parent_em, size, alignment, em_alloc_scratch);  // Allocate memory from the parent easy memory scratch
+    if (!em) return NULL;
+
     set_color(&(em->as.block_representation), EMBLACK);  // Scratch block is always black to highlight its special status
     set_prev(&(em->as.block_representation), parent_em); // Scratch block has no previous block so we use prev pointer to store parent EM pointer
 

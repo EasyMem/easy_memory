@@ -689,13 +689,11 @@ EM_STATIC_ASSERT((sizeof(EM) == sizeof(Block)), Size_mismatch_between_Bump_and_B
  *  is indistinguishable from a standard occupied memory block.
  *
  *  [ WORD 0: as.self.capacity ] -> Maps to Block.size_and_reserved
- *  ┌───────────────────────────────────────────────────────────────────┬──────────┬───────────┐
- *  │                               Capacity                            │ Reserved │ Align/Res │
- *  │  [63/31/15 .................................................. 5]  │  [4..3]  │  [2..0]   │
- *  └───────────────────────────────────────────────────────────────────┴──────────┴───────────┘
- *    - Align/Res (3 bits): Always 0. Bump allocators rely on the parent EM's baseline alignment.
- *                          Unlike EM headers, Bump headers DO NOT store an alignment exponent here.
- *    - Reserved  (2 bits): Always 0. Because a Bump allocator is allocated from the parent arena
+ *  ┌─────────────────────────────────────────────────────────────────────────────┬────────────┐
+ *  │                               Capacity                                      │  Reserved  │
+ *  │  [63/31/15 ............................................................ 5]  │   [4..0]   │
+ *  └─────────────────────────────────────────────────────────────────────────────┴────────────┘
+ *    - Reserved  (5 bits): Always 0. Because a Bump allocator is allocated from the parent arena
  *                          as a standard block, its total size is inherently rounded to a multiple
  *                          of 4, guaranteeing these bits remain empty.
  *    - Capacity  (N bits): Total payload capacity carved out from the parent (shifted left by 3).
@@ -984,8 +982,8 @@ static inline void set_size(Block *block, size_t size) {
      * for advanced metadata packing.
     */
 
-    size_t alignment_piece = block->size_and_reserved & EMALIGNMENT_MASK; // Preserve current alignment bits
-    block->size_and_reserved = ((size >> EMRESERVED_SHIFT) << EMALL_RESERVED_SHIFT) | alignment_piece; // Set new size while preserving alignment bits
+    size_t reserved = block->size_and_reserved & EMALL_RESERVED_MASK; // Preserve current reserved bits
+    block->size_and_reserved = ((size >> EMRESERVED_SHIFT) << EMALL_RESERVED_SHIFT) | reserved; // Set new size while preserving reserved bits
 }
 
 

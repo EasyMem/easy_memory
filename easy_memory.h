@@ -2437,6 +2437,31 @@ static inline EM *create_nested_aligned_internal(EM *parent_em, size_t size, siz
     return em;
 }
 
+/*
+ * Internal Bump allocator creation core
+ * Orchestrates the allocation and initialization of a Bump allocator (standard or scratch).
+ * Uses function pointer injection (allocator) to abstract the memory sourcing logic.
+ * Exploits the strict ABI compatibility between 'Block' and 'Bump' structures to 
+ * masquerade the allocator as a standard occupied block to the parent EM instance.
+ * Returns pointer to the initialized Bump instance, or NULL on failure.
+ */
+static inline Bump *bump_create_internal(EM *EM_RESTRICT parent_em, size_t size, AllocFunc allocator) {
+    EM_CHECK((parent_em != NULL),          NULL, "Internal Error: 'bump_create_internal' called with NULL parent easy memory");
+    EM_CHECK((size <= EMMAX_SIZE),         NULL, "Internal Error: 'bump_create_internal' called with too big size");
+    EM_CHECK((size >= EM_MIN_BUFFER_SIZE), NULL, "Internal Error: 'bump_create_internal' called with too small size");
+
+    void *data = allocator(parent_em, size);  // Allocate memory from the parent easy memory
+    if (!data) return NULL;
+
+    Block *block = (Block *)(void *)((char *)data - sizeof(Block));
+    Bump *bump = (Bump *)((void *)block);  // just cast allocated Block to Bump
+
+    bump_set_em(bump, parent_em);
+    bump_set_offset(bump, sizeof(Bump));
+
+    return bump;
+}
+
 
 
 
@@ -3437,20 +3462,7 @@ EMDEF EM *em_create_scratch(EM *EM_RESTRICT parent_em, size_t size) {
  *   - Pointer to the Bump allocator instance, or NULL on failure.
  */
 EMDEF Bump *em_bump_create(EM *EM_RESTRICT parent_em, size_t size) {
-    EM_CHECK((parent_em != NULL),          NULL, "Internal Error: 'em_bump_create' called with NULL parent easy memory");
-    EM_CHECK((size <= EMMAX_SIZE),         NULL, "Internal Error: 'em_bump_create' called with too big size");
-    EM_CHECK((size >= EM_MIN_BUFFER_SIZE), NULL, "Internal Error: 'em_bump_create' called with too small size");
-
-    void *data = em_alloc(parent_em, size);  // Allocate memory from the parent easy memory
-    if (!data) return NULL;
-
-    Block *block = (Block *)(void *)((char *)data - sizeof(Block));
-    Bump *bump = (Bump *)((void *)block);  // just cast allocated Block to Bump
-
-    bump_set_em(bump, parent_em);
-    bump_set_offset(bump, sizeof(Bump));
-
-    return bump;
+    return bump_create_internal(parent_em, size, em_alloc);
 }
 
 /*
@@ -3496,20 +3508,7 @@ EMDEF Bump *em_bump_create(EM *EM_RESTRICT parent_em, size_t size) {
  *   - Pointer to the Bump allocator instance, or NULL on failure.
  */
 EMDEF Bump *em_bump_create_scratch(EM *EM_RESTRICT parent_em, size_t size) {
-    EM_CHECK((parent_em != NULL),          NULL, "Internal Error: 'em_bump_create_scratch' called with NULL parent easy memory");
-    EM_CHECK((size <= EMMAX_SIZE),         NULL, "Internal Error: 'em_bump_create_scratch' called with too big size");
-    EM_CHECK((size >= EM_MIN_BUFFER_SIZE), NULL, "Internal Error: 'em_bump_create_scratch' called with too small size");
-
-    void *data = em_alloc_scratch(parent_em, size); // Allocate scratch memory from the parent easy memory
-    if (!data) return NULL;
-
-    Block *block = (Block *)(void *)((char *)data - sizeof(Block));
-    Bump *bump = (Bump *)((void *)block); // just cast allocated Block to Bump
-
-    bump_set_offset(bump, sizeof(Bump));
-    bump_set_em(bump, parent_em);
-
-    return bump;
+    return bump_create_internal(parent_em, size, em_alloc_scratch);
 }
 
 /*

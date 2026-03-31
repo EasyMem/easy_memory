@@ -200,15 +200,20 @@ em_reset(em);
 em_destroy(em);
 ```
 
-### 3. Custom Baseline Alignment
-You can enforce a strict baseline alignment for **all** allocations within a context. Useful for systems requiring specific memory boundaries (e.g., GPU buffers).
+### 3. Alignment Control (Global & Per-Allocation)
+Enforce strict memory boundaries globally for an entire context (including nested sub-arenas), or request specific alignment for individual blocks.
 
 ```c
-// Create context where EVERY allocation is guaranteed 64-byte alignment
+// 1. Global: EVERY allocation is guaranteed 64-byte alignment
 EM *gpu_em = em_create_aligned(1024 * 1024, 64);
+// Note: You can also use em_create_nested_aligned() for sub-arenas
 
-// This pointer is automatically 64-byte aligned
-void *buffer = em_alloc(gpu_em, 1024);
+void *buffer = em_alloc(gpu_em, 1024); // Automatically 64-byte aligned
+
+// 2. Per-Allocation: Request a specific boundary on the fly
+// Allocate a single structure perfectly aligned to a 256-byte boundary,
+// forcing a stricter alignment than the arena's 64-byte baseline for this specific allocation.
+void *dma_struct = em_alloc_aligned(gpu_em, sizeof(MyDMAStruct), 256);
 ```
 
 ### 4. Nested Scopes (Hierarchical Memory)
@@ -227,23 +232,31 @@ void handle_request(EM *global_em) {
 }
 ```
 
-### 5. Bump Sub-Allocator & Trimming
-For high-speed temporary objects. Includes `trim` to return unused memory to the parent.
+### 5. Bump Sub-Allocator (Trim & Reset)
+Ideal for high-speed temporary objects. Features `trim` to return unused memory to the parent, and `reset` for instant bulk clearing.
 
 ```c
-void load_level_assets(EM *main_em) {
-    // Reserve a large chunk (1MB) for the bump allocator
-    Bump *bump = em_bump_create(main_em, 1024 * 1024);
+// Reserve a large chunk (1MB) for the bump allocator
+Bump *bump = em_bump_create(main_em, 1024 * 1024);
 
-    // ... load unknown amount of assets ...
-    for (int i = 0; i < asset_count; ++i) {
-        em_bump_alloc(bump, asset_size[i]);
-    }
-
-    // Optimization: Return unused memory back to main_em
-    // If we only used 600KB, the remaining 424KB is freed to main_em
-    em_bump_trim(bump); 
+// -- Scenario A: Asset Loading (Trim) --
+for (int i = 0; i < current_level_assets; ++i) {
+    em_bump_alloc(bump, asset_size[i]);
 }
+// Optimization: Return unused memory back to main_em
+// If we only used 600KB, the remaining 424KB is instantly freed back!
+em_bump_trim(bump); 
+
+// -- Scenario B: Per-Frame Render Loop (Reset) --
+while (game_running) {
+    void *temp_obj = em_bump_alloc(bump, 256);
+    
+    // O(1) Reset: instantly invalidates all allocations made this frame,
+    // resetting the offset to the beginning without returning memory to the parent.
+    em_bump_reset(bump); 
+}
+
+em_bump_destroy(bump);
 ```
 
 ### 6. Static / Bare Metal (No Malloc)
@@ -269,6 +282,63 @@ int main(void) {
 
     // ... use em_alloc as normal ...
 
+    return 0;
+}
+```
+
+### 7. Scratchpad (Temporary Tail Allocations | Lifecycle Isolation)
+The scratchpad provides a universal mechanism to reserve memory at the extreme tail (highest address) of an EM instance in strict **O(1)** time. By anchoring temporary allocations here, contiguous space is preserved for the main heap.
+
+*   **Universal API:** Every creation function has a `_scratch` variant (`em_alloc_scratch`, `em_bump_create_scratch`, `em_create_scratch`).
+*   **Fully Functional:** A scratch entity is a 100% standard object. A nested `EM` created via scratch can host normal allocations, sub-allocators, or even its own inner scratchpad.
+*   **Single Slot Constraint:** Each `EM` instance supports exactly **one** active scratch allocation at a time.
+*   **Unified Lifecycle:** No special `*_scratch_free` or `*_scratch_destroy` functions exist. The standard deallocation API automatically detects scratch blocks and reclaims the tail.
+
+```c
+EM *root_em = em_create(1024 * 1024);
+
+// Normal allocations build up from the bottom
+void *persistent = em_alloc(root_em, 1024);
+
+// -- 1. Basic Scratch Allocation --
+// Uses the single scratch slot of root_em
+void *temp_buffer = em_alloc_scratch(root_em, 1024 * 64);
+// Unified cleanup detects the scratch block automatically
+em_free(temp_buffer); 
+
+// -- 2. Advanced Scratch: Functional EM Instances --
+// Now the slot is free, we can use it to create a full nested EM at the tail
+EM *temp_scope = em_create_scratch(root_em, 1024 * 256);
+
+// Because temp_scope is a standard EM instance, it has its own independent scratch slot!
+Bump *inner_bump = em_bump_create_scratch(temp_scope, 1024 * 64);
+void *ultra_temp = em_bump_alloc(inner_bump, 128);
+
+// -- Unified Cleanup --
+em_bump_destroy(inner_bump); 
+em_destroy(temp_scope); // Instantly restores the 256KB tail in root_em
+```
+
+### 8. Visual Debugging
+The library includes a built-in terminal visualizer to inspect memory fragmentation and layout.
+
+```c
+#define DEBUG
+#define EASY_MEMORY_IMPLEMENTATION
+#include "easy_memory.h"
+
+int main(void) {
+    EM *em = em_create(1024 * 64);
+    
+    em_alloc(em, 1024);
+    void *ptr = em_alloc(em, 512);
+    em_alloc_scratch(em, 2048);
+    
+    em_free(ptr); // Create a gap
+    
+    // Prints a colorized, 50-character wide visual representation of the heap
+    print_fancy(em, 50); 
+    
     return 0;
 }
 ```
@@ -332,7 +402,23 @@ Helps detect use-after-free and uninitialized memory usage.
 
 ## Limitations & Roadmap
 
-### ⚠️ Current Limitation: Stack Usage (Recursive Algorithms)
+### Thread Safety & Concurrency
+The library is intentionally lock-free and not thread-safe out of the box. It contains no internal mutexes, atomics, or spinlocks. 
+*   **Thread-Local Storage (TLS):** This is the intended and optimal use case. By provisioning a dedicated `EM` instance per thread, allocations remain deterministic and highly performant with zero thread contention or context-switching overhead.
+*   **Shared Arenas:** If memory must be allocated or freed from the *same* `EM` instance across multiple threads simultaneously, the `em_alloc` and `em_free` calls must be wrapped in external synchronization primitives. The library does not internally protect against race conditions.
+
+### MISRA C Non-Compliance (By Design)
+For environments that mandate strict **MISRA C** compliance (e.g., critical aerospace or automotive systems), `easy_memory` is not a suitable choice.
+
+To achieve extreme memory density (metadata overhead of only 4 machine words per block) and O(1) nested tracking, the architecture heavily relies on advanced C paradigms that MISRA explicitly forbids:
+*   **Pointer Tagging:** Metadata flags (e.g., `is_free`, `color`, `has_scratch`) are embedded directly into the least significant bits of valid pointers.
+*   **Type Punning & Unions:** `EM` and `Bump` structures physically masquerade as standard `Block` headers to their parent arenas, achieving zero-cost hierarchy tracking.
+*   **Pointer Arithmetic:** Extensive casting between pointers and `uintptr_t` is utilized to calculate absolute memory alignments and dynamic padding offsets.
+*   **XOR-Magic:** Pointers are XORed with `EM_MAGIC` numbers to validate memory provenance and dynamically detect alignment gaps.
+
+These techniques are not code smells; they are the fundamental physics of how this allocator achieves its speed and compactness. Performance and memory density are deliberately prioritized over rigid coding standards.
+
+### Current Limitation: Stack Usage (Recursive Algorithms)
 The current implementation of the LLRB tree (insertion, deletion, and balancing) relies on **recursion**. 
 
 *   **Impact:** While efficient and readable, deep recursion may risk a **Stack Overflow** on severely constrained embedded platforms (e.g., AVR, Cortex-M0 with tiny stacks) if memory becomes highly fragmented, leading to a deep tree structure.

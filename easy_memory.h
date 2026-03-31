@@ -771,14 +771,18 @@ EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED
 EM *em_create_aligned(size_t size, size_t alignment);
 #endif // EM_NO_MALLOC
 
+
 // --- EM Creation (Static) ---
+
 EMDEF EM_ATTR_WARN_UNUSED 
 EM *em_create_static(void *EM_RESTRICT memory, size_t size);
 
 EMDEF EM_ATTR_WARN_UNUSED 
 EM *em_create_static_aligned(void *EM_RESTRICT memory, size_t size, size_t alignment);
 
+
 // --- EM Creation (Nested & Scratch) ---
+
 EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED 
 EM *em_create_nested(EM *EM_RESTRICT parent_em, size_t size);
 
@@ -791,13 +795,16 @@ EM *em_create_scratch(EM *EM_RESTRICT parent_em, size_t size);
 EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED 
 EM *em_create_scratch_aligned(EM *EM_RESTRICT parent_em, size_t size, size_t alignment);
 
+
 // --- Lifecycle & Reset ---
+
 EMDEF void em_reset(EM *EM_RESTRICT em);
 EMDEF void em_reset_zero(EM *EM_RESTRICT em);
 EMDEF void em_destroy(EM *em);
 
 
 // --- Allocation Core ---
+
 EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED EM_ATTR_ALLOC_SIZE(2, size) 
 void *em_alloc(EM *EM_RESTRICT em, size_t size);
 
@@ -810,16 +817,21 @@ void *em_alloc_scratch(EM *EM_RESTRICT em, size_t size);
 EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED EM_ATTR_ALLOC_SIZE(2, size) 
 void *em_alloc_scratch_aligned(EM *EM_RESTRICT em, size_t size, size_t alignment);
 
+
 // --- Calloc ---
+
 EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED EM_ATTR_ALLOC_SIZE2(2, 3, nmemb, size) 
 void *em_calloc(EM *EM_RESTRICT em, size_t nmemb, size_t size);
 
+
 // --- Free ---
+
 EMDEF void em_free(void *data);
 
 
 
 // --- Bump Allocator ---
+
 EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED
 Bump *em_bump_create(EM *EM_RESTRICT em, size_t size);
 

@@ -61,6 +61,7 @@ static void test_nested_creation(void) {
     print_fancy(parent_em, 100);
     #endif
 
+#if EM_SAFETY_POLICY == EM_POLICY_DEFENSIVE
     TEST_CASE("Invalid Nested EM Creation");
     EM *invalid_nested1 = em_create_nested(NULL, nested_em_size);
     ASSERT(invalid_nested1 == NULL, "Creating nested EM with NULL parent should fail");
@@ -81,11 +82,13 @@ static void test_nested_creation(void) {
     TEST_CASE("Free Already Freed Nested EM");
     em_destroy(nested_em); // Should not crash
     ASSERT(true, "Freeing already freed nested EM should not crash");
+#endif
 
     TEST_CASE("Free Parent EM");
     em_destroy(parent_em);
     ASSERT(true, "Parent EM should be freed successfully");
     
+#if EM_SAFETY_POLICY == EM_POLICY_DEFENSIVE
     TEST_CASE("Nested EM creation in too small Parent EM");
     size_t small_parent_size = sizeof(EM) + sizeof(Block) + EM_MIN_BUFFER_SIZE + 10; // Just above minimum
     EM *small_parent = em_create(small_parent_size);
@@ -97,6 +100,7 @@ static void test_nested_creation(void) {
     
     em_set_is_nested(small_parent, false); 
     em_destroy(small_parent);
+#endif
 }
 
 static void test_nested_aligned_creation(void) {

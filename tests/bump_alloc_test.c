@@ -30,10 +30,10 @@ static void test_bump_creation(void) {
 
     em_bump_destroy(bump);
     #ifdef DEBUG
-    em_free((char *)bump + sizeof(Bump));
     print_em(em);
     #endif
 
+#if EM_SAFETY_POLICY == EM_POLICY_DEFENSIVE
     bump = em_bump_create(em, 0);
     ASSERT(bump == NULL, "Bump allocator creation with zero size should fail");
     if (bump) em_bump_destroy(bump);
@@ -49,17 +49,19 @@ static void test_bump_creation(void) {
     bump = em_bump_create(em, 2000); // Larger than em size
     ASSERT(bump == NULL, "Bump allocator creation with size larger than EM should fail");
     if (bump) em_bump_destroy(bump);
+#endif
 
     bump = em_bump_create(em, em_size - sizeof(EM) - sizeof(Block));
     ASSERT(bump != NULL, "Bump allocator with size of all EM should be created successfully");
-
     em_bump_destroy(bump);
 
+#if EM_SAFETY_POLICY == EM_POLICY_DEFENSIVE
     em_bump_destroy(NULL); // Should not crash
     ASSERT(true, "Freeing NULL bump allocator should not crash");
 
     em_bump_reset(NULL); // Should not crash
     ASSERT(true, "Resetting NULL bump allocator should not crash");
+#endif
 
     em_destroy(em);
 }
@@ -77,8 +79,10 @@ static void test_bump_allocation(void) {
 
     TEST_PHASE("Allocate memory from Bump Allocator");
 
+#if EM_SAFETY_POLICY == EM_POLICY_DEFENSIVE
     em_bump_alloc(NULL, 100); // Should not crash
     ASSERT(true, "Allocating from NULL bump allocator should not crash");
+#endif
 
     size_t alloc_size1 = 100;
     void *ptr1 = em_bump_alloc(bump, alloc_size1);
@@ -100,10 +104,13 @@ static void test_bump_allocation(void) {
     ASSERT(bump_get_capacity(bump) == bump_size, "Bump allocator capacity should remain unchanged after reset");
 
     TEST_PHASE("Allocate aligned memory from Bump Allocator");
+
+#if EM_SAFETY_POLICY == EM_POLICY_DEFENSIVE
     size_t alloc_size4 = 50;
-    size_t alignment4 = 3;
+    size_t alignment4 = 3; // Invalid alignment
     void *ptr4 = em_bump_alloc_aligned(bump, alloc_size4, alignment4);
     ASSERT(ptr4 == NULL, "Aligned allocation with non-power-of-two alignment should fail");
+#endif
 
     size_t alloc_size5 = 50;
     size_t alignment5 = 64;
@@ -117,12 +124,13 @@ static void test_bump_allocation(void) {
     
     em_bump_reset(bump);
     
-    size_t alloc_size7 = 0;
+#if EM_SAFETY_POLICY == EM_POLICY_DEFENSIVE
+    size_t alloc_size7 = 0; // Invalid size
     void *ptr7 = em_bump_alloc_aligned(bump, alloc_size7, alignment5);
     ASSERT(ptr7 == NULL, "Aligned allocation with zero size should fail");
 
     size_t alloc_size8 = 100;
-    size_t alignment8 = (size_t)-1;
+    size_t alignment8 = (size_t)-1; // Huge invalid alignment
     void *ptr8 = em_bump_alloc_aligned(bump, alloc_size8, alignment8);
     ASSERT(ptr8 == NULL, "Aligned allocation with over the top alignment should fail");
 
@@ -132,8 +140,9 @@ static void test_bump_allocation(void) {
     ASSERT(ptr9 == NULL, "Aligned allocation that exactly matches bump capacity should fail");
 
     em_bump_reset(bump);
-    void *ptr10 = em_bump_alloc(bump, SIZE_MAX); // Cast for warning suppression if needed
+    void *ptr10 = em_bump_alloc(bump, SIZE_MAX); // Overflow
     ASSERT(ptr10 == NULL, "Huge allocation must fail gracefully");
+#endif
 
     TEST_PHASE("Free Bump Allocator");
     em_bump_destroy(bump);
@@ -172,9 +181,11 @@ static void test_bump_trim(void) {
     TEST_CASE("Bump Trim Scenarios");
 
     // ---------------------------------------------------------
+#if EM_SAFETY_POLICY == EM_POLICY_DEFENSIVE
     TEST_PHASE("1. Trim NULL");
     em_bump_trim(NULL);
     ASSERT(1, "bump_trim(NULL) should not crash");
+#endif
 
     // ---------------------------------------------------------
     TEST_PHASE("2. Trim when not enough space (No-op)");

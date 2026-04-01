@@ -5,8 +5,6 @@
 #include <limits.h>
 #include <stdint.h>
 
-#include <limits.h>
-
 #ifndef SSIZE_MAX
 #define SSIZE_MAX (SIZE_MAX / 2)
 #endif
@@ -38,6 +36,7 @@ static void test_invalid_allocations(void) {
     EM *em = em_create(1024);
     ASSERT(em != NULL, "EM creation should succeed");
 
+#if EM_SAFETY_POLICY == EM_POLICY_DEFENSIVE
     TEST_CASE("Zero size allocation");
     void *zero_size = em_alloc(em, 0);
     ASSERT(zero_size == NULL, "Zero size allocation should return NULL");
@@ -78,6 +77,7 @@ static void test_invalid_allocations(void) {
     TEST_CASE("Allocation larger than EM size");
     void *huge_allocation = em_alloc(em, 2048);
     ASSERT(huge_allocation == NULL, "Allocation larger than EM size should fail");
+#endif
 
     em_destroy(em);
 }
@@ -85,6 +85,7 @@ static void test_invalid_allocations(void) {
 static void test_invalid_em_creation(void) {
     TEST_PHASE("Invalid EM Creation Scenarios");
 
+#if EM_SAFETY_POLICY == EM_POLICY_DEFENSIVE
     TEST_CASE("Zero size EM");
     EM *zero_size_em = em_create(0);
     ASSERT(zero_size_em == NULL, "Zero size EM creation should fail");
@@ -121,6 +122,7 @@ static void test_invalid_em_creation(void) {
     TEST_CASE("Reset NULL EM");
     em_reset(NULL); // Should not crash
     ASSERT(true, "Reset NULL EM should not crash");
+#endif
 }
 
 static void test_boundary_conditions(void) {
@@ -132,9 +134,11 @@ static void test_boundary_conditions(void) {
     ASSERT(min_size_em != NULL, "EM with minimum valid size should succeed");
     em_destroy(min_size_em);
 
+#if EM_SAFETY_POLICY == EM_POLICY_DEFENSIVE
     TEST_CASE("EM size just below minimum");
     EM *below_min_em = em_create(min_size - 1 - sizeof(EM));
     ASSERT(below_min_em == NULL, "EM with size below minimum should fail");
+#endif
 
     TEST_CASE("Static EM with minimum size");
     void *min_memory = malloc(min_size);
@@ -142,11 +146,13 @@ static void test_boundary_conditions(void) {
     ASSERT(min_static_em != NULL, "Static EM with minimum valid size should succeed");
     free(min_memory);
 
+#if EM_SAFETY_POLICY == EM_POLICY_DEFENSIVE
     TEST_CASE("Static EM with size below minimum");
     void *small_memory_bc = malloc(min_size - 1);
     EM *small_static_em_bc = em_create_static(small_memory_bc, min_size - 1);
     ASSERT(small_static_em_bc == NULL, "Static EM with size below minimum should fail");
     free(small_memory_bc);
+#endif
 
     TEST_CASE("Tail allocation leaving fragment smaller than block header");
     size_t em_size_frag = 1024;
@@ -200,6 +206,7 @@ static void test_full_em_allocation(void) {
     ASSERT(em_get_free_blocks(em) == NULL, "Free block list should be empty after filling allocation");
     ASSERT(free_size_in_tail(em) == 0, "Free size in tail should be 0 after filling allocation");
 
+    // Normal OOM (valid runtime state)
     TEST_CASE("Attempt allocation when no space is left");
     void *second_block = em_alloc(em, 1); // Attempt to allocate just one more byte
     ASSERT(second_block == NULL, "Allocation should fail when no space is left");
@@ -325,6 +332,7 @@ static void test_static_em_creation(void) {
     void *alloc2 = em_alloc(static_em, 1024);
     ASSERT(alloc2 != NULL, "Second allocation from static EM should succeed");
 
+    // Normal OOM (valid)
     void *alloc3 = em_alloc(static_em, 1024); // This should fail
     ASSERT(alloc3 == NULL, "Allocation exceeding static EM capacity should fail");
 
@@ -340,6 +348,7 @@ static void test_freeing_invalid_blocks(void) {
     EM *em = em_create(1024);
     ASSERT(em != NULL, "EM creation should succeed");
 
+#if EM_SAFETY_POLICY == EM_POLICY_DEFENSIVE
     TEST_CASE("Freeing a pointer not allocated by the EM");
     struct {
         uintptr_t fake_backlink;
@@ -378,6 +387,7 @@ static void test_freeing_invalid_blocks(void) {
     em_free(ptr); // Should not crash
     ASSERT(true, "Freeing block from different em should not crash");
     em_destroy(another_em);
+#endif
 
     em_destroy(em);
 }
@@ -423,6 +433,7 @@ static void test_calloc(void) {
     print_em(em);
     #endif
 
+#if EM_SAFETY_POLICY == EM_POLICY_DEFENSIVE
     TEST_PHASE("Calloc with overflow in size calculation");
     size_t large_nmemb = SIZE_MAX / 2;
     size_t large_size = 3;
@@ -450,6 +461,7 @@ static void test_calloc(void) {
     print_fancy(em, 100);
     print_em(em);
     #endif
+#endif
 
     em_destroy(em);
     em = em_create(1000);
@@ -873,6 +885,7 @@ static void test_invalid_scratch_allocation(void) {
     EM *em = em_create(1024);
     ASSERT(em != NULL, "EM creation should succeed");
 
+#if EM_SAFETY_POLICY == EM_POLICY_DEFENSIVE
     TEST_CASE("Zero size scratch allocation");
     void *zero_size = em_alloc_scratch(em, 0);
     ASSERT(zero_size == NULL, "Zero size scratch allocation should return NULL");
@@ -896,6 +909,7 @@ static void test_invalid_scratch_allocation(void) {
     TEST_CASE("Invalid alignment (not power of two)");
     void *invalid_align_alloc = em_alloc_scratch_aligned(em, 32, 3);
     ASSERT(invalid_align_alloc == NULL, "Scratch allocation with invalid alignment should fail");
+#endif
 
     em_destroy(em);
 }
@@ -921,6 +935,7 @@ static void test_scratch_em_creation_and_freeing(void) {
     em_destroy(scratch_em);
     ASSERT(free_size_in_tail(em) == initial_free, "EM free size should restore after freeing scratch EM");
 
+#if EM_SAFETY_POLICY == EM_POLICY_DEFENSIVE
     TEST_CASE("Attempt to create oversized scratch EM");
     EM *oversized_scratch_em = em_create_scratch(em, 4096);
     ASSERT(oversized_scratch_em == NULL, "Oversized scratch EM creation should fail");
@@ -936,15 +951,18 @@ static void test_scratch_em_creation_and_freeing(void) {
     TEST_CASE("Attempt to create scratch EM with negative/too large size");
     EM *negative_size_scratch_em = em_create_scratch(em, (size_t)-1);
     ASSERT(negative_size_scratch_em == NULL, "Scratch EM creation with negative size should fail");
+#endif
 
     TEST_CASE("Attempt to create scratch EM with custom alignment");
     EM *custom_align_scratch_em = em_create_scratch_aligned(em, 256, 32);
     ASSERT(custom_align_scratch_em != NULL, "Scratch EM creation with custom alignment should succeed");
     em_destroy(custom_align_scratch_em);
 
+#if EM_SAFETY_POLICY == EM_POLICY_DEFENSIVE
     TEST_CASE("Attempt to create scratch EM with invalid alignment");
     EM *invalid_align_scratch_em = em_create_scratch_aligned(em, 256, 3);
     ASSERT(invalid_align_scratch_em == NULL, "Scratch EM creation with invalid alignment should fail");
+#endif
 
     em_destroy(em);
 }
@@ -972,4 +990,4 @@ int main(void) {
     
     print_test_summary();
     return tests_failed > 0 ? 1 : 0;
-} 
+}

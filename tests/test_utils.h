@@ -78,6 +78,23 @@ bool verify_memory_pattern(void *ptr, size_t size, int pattern);
  * Function for printing test results
 */
 void print_test_summary(void) {
+    #if EM_SAFETY_POLICY == EM_POLICY_CONTRACT
+    printf("\n\n\n");
+    printf("=================================================================\n");
+    printf(" [INFO] TEST SUITE RUNNING IN STRICT CONTRACT MODE               \n");
+    printf("=================================================================\n");
+    printf(" Some tests have been intentionally disabled by the compiler.\n");
+    printf(" The easy_memory test suite includes 'Sad Path' scenarios that\n");
+    printf(" feed invalid data (NULLs, bad alignments, structural overflows)\n");
+    printf(" to achieve 100%% coverage of Defensive error-handling paths.\n");
+    printf("\n");
+    printf(" In CONTRACT mode (EM_POLICY_CONTRACT), providing invalid input\n");
+    printf(" is considered an API violation that triggers assertions or UB.\n");
+    printf(" Therefore, those specific misuse tests are excluded here.\n");
+    printf("=================================================================\n");
+    printf("\n\n");
+#endif
+
     printf("\n");
     printf(ANSI_COLOR_BLUE "=== Test Results ===\n" ANSI_COLOR_RESET);
     printf("Total tests: %d\n", tests_total);

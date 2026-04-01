@@ -200,9 +200,9 @@ jobs:
         run: |
           make tests STD_C=${{ matrix.std }}
   
-  # Job 8: Test various optimization levels
+  # Job 8: Test various optimization levels and safety policies
   build-and-test-optimizations:
-    name: ${{ matrix.os }} | ${{ matrix.compiler }} | ${{ matrix.opt }}
+    name: ${{ matrix.os }} | ${{ matrix.compiler }} | ${{ matrix.opt }} | Policy ${{ matrix.policy }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -210,6 +210,7 @@ jobs:
         os: [ubuntu-latest, macos-latest]
         compiler: [gcc, clang]
         opt: [-O1, -O2, -O3, -Os, -Oz]
+        policy: [1, 0] # 1 = DEFENSIVE, 0 = CONTRACT
         exclude:
           - compiler: gcc
             opt: -Oz
@@ -217,17 +218,18 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build and Test
         run: |
-          make tests CC=${{ matrix.compiler }} EXTRA_CFLAGS="${{ matrix.opt }}"
+          make tests CC=${{ matrix.compiler }} EXTRA_CFLAGS="${{ matrix.opt }} -DEM_SAFETY_POLICY=${{ matrix.policy }} -DEM_ASSERT_STAYS"
 
-  # Job 9: MSVC with different architectures and optimizations
+  # Job 9: MSVC with different architectures, optimizations and policies
   build-and-test-msvc:
-    name: Windows | MSVC | ${{ matrix.arch }} | ${{ matrix.opt }}
+    name: Windows | MSVC | ${{ matrix.arch }} | ${{ matrix.opt }} | Policy ${{ matrix.policy }}
     runs-on: windows-latest
     strategy:
       fail-fast: false
       matrix:
         arch: [x64, x86]
         opt: [/O1, /O2, /Ox]
+        policy: [1, 0]
     
     steps:
       - uses: actions/checkout@v4
@@ -242,8 +244,8 @@ jobs:
           
           cd tests
           FOR %%f IN (*.c) DO (
-            echo --- Compiling %%f with MSVC [${{ matrix.arch }}, ${{ matrix.opt }}] ---
-            cl.exe /W4 /WX /DDEBUG ${{ matrix.opt }} /I.. /Fe:%%~nf.exe %%f
+            echo --- Compiling %%f with MSVC [${{ matrix.arch }}, ${{ matrix.opt }}, Policy ${{ matrix.policy }}] ---
+            cl.exe /W4 /WX /DDEBUG /DEM_SAFETY_POLICY=${{ matrix.policy }} /DEM_ASSERT_STAYS ${{ matrix.opt }} /I.. /Fe:%%~nf.exe %%f
             if errorlevel 1 exit /b 1
             echo --- Running %%~nf.exe ---
             %%~nf.exe

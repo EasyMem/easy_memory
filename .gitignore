@@ -57,6 +57,7 @@ tests/same_size_test_*
 tests/validation_test_*
 tests/bump_alloc_test_*
 tests/em_nested_test_*
+tests/slab_alloc_test_*
 
 # Coverage files
 *.gcno

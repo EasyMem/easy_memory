@@ -66,6 +66,7 @@ extern "C" {
 typedef struct Block Block;
 typedef struct EM    EM;
 typedef struct Bump  Bump;
+typedef struct Slab  Slab;
 
 #ifdef _MSC_VER
 #include <intrin.h>
@@ -500,6 +501,38 @@ EM_STATIC_ASSERT(EM_DEFAULT_ALIGNMENT <= EMMAX_ALIGNMENT, "EM_DEFAULT_ALIGNMENT 
 
 
 /*
+ * Constant: Slab Chunk Low Mask
+ * Mask to extract the lower 5 bits of the chunk size from capacity_and_chunk_low field.
+*/
+#define EMSLAB_CHUNK_LOW_MASK        ((size_t)31)
+
+/*
+ * Constant: Slab Chunk High Mask
+ * Mask to extract the upper 3 bits of the chunk size from free_index_and_chunk_high field.
+*/
+#define EMSLAB_CHUNK_HIGH_MASK       ((uintptr_t)7)
+
+/*
+ * Constant: Slab Index Shift
+ * Number of bits to shift to encode/decode the free index in free_index_and_chunk_high field.
+*/
+#define EMSLAB_INDEX_SHIFT           3
+
+/*
+ * Constant: Slab Index Mask
+ * Mask to extract the free index bits from free_index_and_chunk_high field.
+*/
+#define EMSLAB_INDEX_MASK            (~EMSLAB_CHUNK_HIGH_MASK)
+
+/*
+ * Constant: Slab Chunk High Shift
+ * Number of bits to shift the upper part of chunk size when assembling the raw size.
+*/
+#define EMSLAB_CHUNK_HIGH_ASSEMBLY_SHIFT 5
+
+
+
+/*
  * Constant: EM Color Definitions
  * Defines the color values for blocks in the red-black tree.
 */
@@ -747,6 +780,76 @@ EM_STATIC_ASSERT((sizeof(Bump) == sizeof(Block)), Size_mismatch_between_Bump_and
 
 
 
+/* ==============================================================================================
+ *  MEMORY LAYOUT: Slab Allocator Header (ABI Compatible with Block)
+ * ==============================================================================================
+ *  The Slab allocator provides a highly efficient fixed-size block pool. Like the EM and Bump 
+ *  headers, it is strictly ABI-compatible with the 'Block' structure, masquerading as a 
+ *  standard occupied block to its parent arena.
+ *
+ *  [ WORD 0: as.self.capacity_and_chunk_low ] -> Maps to Block.size_and_reserved
+ *  ┌─────────────────────────────────────────────────────────────────────────────┬────────────┐
+ *  │                               Capacity                                      │ Chunk Low  │
+ *  │  [63/31/15 ............................................................ 5]  │   [4..0]   │
+ *  └─────────────────────────────────────────────────────────────────────────────┴────────────┘
+ *    - Chunk Low (5 bits): The lower 5 bits of the 8-bit compressed chunk size representation.
+ *    - Capacity  (N bits): Total payload capacity carved out from the parent (shifted left by 5).
+ *
+ *  [ WORD 1: as.self.prev ] -> Maps to Block.prev
+ *  ┌──────────────────────────────────────────────────────────────────────────────────────────┐
+ *  │                         Previous Block Address (Physical Neighbor)                       │
+ *  │  [63/31/15 ......................................................................... 0]  │
+ *  └──────────────────────────────────────────────────────────────────────────────────────────┘
+ *    - Address: Pointer to the physically preceding Block (if any). 
+ *               Essential for O(1) merging when the Slab allocator is destroyed.
+ *
+ *  [ WORD 2: as.self.em ] -> Maps to Block.as.occupied.em (NO POINTER TAGGING NEEDED)
+ *  ┌──────────────────────────────────────────────────────────────────────────────────────────┐
+ *  │                               Parent EM Address                                          │
+ *  │  [63/31/15 ......................................................................... 0]  │
+ *  └──────────────────────────────────────────────────────────────────────────────────────────┘
+ *    - Parent Addr: Direct pointer to the Easy Memory instance that created this Slab allocator.
+ *
+ *  [ WORD 3: as.self.free_index_and_chunk_high ] -> Maps to Block.as.occupied.magic
+ *  ┌─────────────────────────────────────────────────────────────────────────────┬────────────┐
+ *  │                               Free Index                                    │ Chunk High │
+ *  │  [63/31/15 ............................................................ 3]  │   [2..0]   │
+ *  └─────────────────────────────────────────────────────────────────────────────┴────────────┘
+ *    - Chunk High (3 bits): The upper 3 bits of the 8-bit compressed chunk size.
+ *                           Raw Size = (Chunk High << 5) | Chunk Low.
+ *                           Actual Byte Size = (Raw Size + 1) << EMMIN_EXPONENT.
+ *    - Free Index (N bits): A 1-based cursor driving the hybrid Bump/Free-List state machine.
+ *                           - Value `0` acts as a FULL marker (no memory available).
+ *                           - The Slab avoids O(N) zeroing on creation by utilizing a self-referential 
+ *                             index logic: if a chunk contains its own index, it acts as the 
+ *                             uninitialized Bump frontier. Otherwise, it acts as a Free-List node.
+ * ==============================================================================================
+ */
+struct Slab {
+    union {
+        Block block_representation;  
+        struct {
+            size_t capacity_and_chunk_low;      
+            Block *prev;             
+            EM *em;                  
+            uintptr_t free_index_and_chunk_high;
+        } self;
+    } as;
+};
+
+EM_STATIC_ASSERT(offsetof(Slab, as.self.capacity_and_chunk_low) == offsetof(Block, size_and_reserved), 
+    Slab_capacity_offset_mismatch);
+EM_STATIC_ASSERT(offsetof(Slab, as.self.prev) == offsetof(Block, prev), 
+    Slab_prev_offset_mismatch);
+EM_STATIC_ASSERT(offsetof(Slab, as.self.em) == offsetof(Block, as.occupied.em), 
+    Slab_em_offset_mismatch);
+EM_STATIC_ASSERT(offsetof(Slab, as.self.free_index_and_chunk_high) == offsetof(Block, as.occupied.magic), 
+    Slab_magic_offset_mismatch);
+EM_STATIC_ASSERT((sizeof(Slab) == sizeof(Block)), Size_mismatch_between_Slab_and_Block);
+
+
+
+
 /* 
  * ======================================================================================
  * Public API Declarations
@@ -850,6 +953,25 @@ EMDEF void em_bump_destroy(Bump *bump);
 
 
 
+// --- Slab Allocator ---
+
+EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED
+Slab *em_slab_create(EM *EM_RESTRICT parent_em, size_t slab_size, size_t chunk_size);
+
+EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED
+Slab *em_slab_create_scratch(EM *EM_RESTRICT parent_em, size_t slab_size, size_t chunk_size);
+
+EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED EM_ATTR_ALLOC_SIZE(2, chunk_size) // Note: chunk_size validation is logical here
+void *em_slab_alloc(Slab *EM_RESTRICT slab);
+
+EMDEF void em_slab_free(Slab *EM_RESTRICT slab, void *pointer);
+
+EMDEF void em_slab_reset(Slab *EM_RESTRICT slab);
+EMDEF void em_slab_reset_zero(Slab *EM_RESTRICT slab);
+EMDEF void em_slab_destroy(Slab *slab);
+
+
+
 
 #ifdef EASY_MEMORY_IMPLEMENTATION
 
@@ -900,6 +1022,109 @@ static inline size_t min_exponent_of(size_t num) {
     #endif
 }
 
+/*
+ * Helper function to safely multiply two size_t values.
+ * Returns true if successful, false if an integer overflow occurred.
+ * Uses zero-cost compiler intrinsics and ALU flags where available.
+ */
+static inline bool safe_mul(size_t a, size_t b, size_t *out_result) {
+    /* 
+     * WHY DOING THIS? (Hardware-Accelerated Zero-Cost Safety)
+     *
+     * 1. THE PROBLEM: The Cost of Naive Validation
+     * To prevent critical failures (like buffer overflows in 'calloc' or state-machine 
+     * corruption in 'Slab'), we must validate that 'a * b' does not exceed SIZE_MAX. 
+     * The standard C approach is: 'if (a > SIZE_MAX / b)'. 
+     * However, this forces a hardware division (DIV) on every call, which is 
+     * notoriously slow (20-40+ cycles) and kills performance in allocation hot-paths.
+     *
+     * 2. THE ALU REALITY
+     * At the hardware level, every modern ALU (Arithmetic Logic Unit) already 
+     * knows if a multiplication overflowed. When the CPU executes a 'MUL' 
+     * instruction, it automatically sets internal status flags (Carry or Overflow). 
+     * Accessing these flags is essentially free (1 cycle).
+     *
+     * 3. THE SOLUTION: Compiler Intrinsics
+     * Since standard C cannot directly read CPU flags, we utilize compiler-specific 
+     * intrinsics (like '__builtin_mul_overflow') that map directly to these 
+     * hardware flags. This allows us to achieve 100% safety with zero 
+     * mathematical overhead on the "happy path."
+     *
+     * 4. MULTI-TIER ARCHITECTURE
+     * To ensure this performance remains consistent across all platforms:
+     *   - Desktop (GCC/Clang/MSVC): Uses direct 1-cycle hardware flag checks.
+     *   - 32-bit MCU (Cortex-M/Xtensa): Uses 32x32->64 bit hardware multiplication 
+     *     to detect overflow without costly software division.
+     *   - 16-bit MCU (AVR): Uses optimized 32-bit math routines, avoiding the 
+     *     massive ROM/RAM bloat of 64-bit library calls (__muldi3).
+    */
+
+    #if defined(__GNUC__) || defined(__clang__)
+        // GCC / Clang
+        return !__builtin_mul_overflow(a, b, out_result);
+
+    #elif defined(_MSC_VER)
+        // MSVC (Windows)
+    #   if defined(_M_X64)
+            unsigned __int64 high;
+            *out_result = (size_t)_umul128((unsigned __int64)a, (unsigned __int64)b, &high);
+            return high == 0;
+    #   elif defined(_M_ARM64)
+            *out_result = a * b;
+            return __umulh((unsigned __int64)a, (unsigned __int64)b) == 0;
+    #   else
+            uint64_t res = (uint64_t)a * b;
+            if (res > 0xFFFFFFFF) return false;
+            *out_result = (size_t)res;
+            return true;
+    #   endif
+
+    #elif defined(__ICCARM__) || defined(__IAR_SYSTEMS_ICC__)
+        // IAR Embedded Workbench
+        // TODO: Implement using IAR specific intrinsics for hardware overflow check
+    #   define EM_NEED_SAFE_MUL_FALLBACK
+
+    #elif defined(__CC_ARM) || defined(__ARMCC_VERSION)
+        // Keil / ARM Compiler
+        // TODO: Implement using ARMCC specific intrinsics (e.g. __smull)
+    #   define EM_NEED_SAFE_MUL_FALLBACK
+
+    #else
+        // Unknown or exotic compilers
+    #   define EM_NEED_SAFE_MUL_FALLBACK
+    #endif
+
+    // =====================================================================
+    //  GENERIC C FALLBACK
+    //  Activates if the compiler-specific branch requested it.
+    //  Matches the physical pointer size to avoid costly software math.
+    // =====================================================================
+    #ifdef EM_NEED_SAFE_MUL_FALLBACK
+    #   if UINTPTR_MAX > 0xFFFFFFFF
+            // 64-bit systems without intrinsics (rare)
+            if (a != 0 && b > SIZE_MAX / a) return false;
+            *out_result = a * b;
+            return true;
+    #   elif UINTPTR_MAX > 0xFFFF
+            // 32-bit microcontrollers (Cortex-M, Xtensa, PIC32)
+            uint64_t res = (uint64_t)a * b;
+            if (res > 0xFFFFFFFF) return false;
+            *out_result = (size_t)res;
+            return true;
+    #   else
+            // 16-bit microcontrollers (AVR, MSP430, STM8)
+            // Uses fast 32-bit math (hardware or optimized software routine).
+            // Crucially avoids dragging in massive 64-bit library routines (__muldi3),
+            // preventing huge ROM bloat and cycle penalties on 8/16-bit ALUs.
+            uint32_t res = (uint32_t)a * b;
+            if (res > 0xFFFF) return false;
+            *out_result = (size_t)res;
+            return true;
+    #   endif
+
+    #   undef EM_NEED_SAFE_MUL_FALLBACK
+    #endif
+}
 
 
 /*
@@ -1655,6 +1880,178 @@ static inline void bump_set_capacity(Bump *bump, size_t size) {
     EM_ASSERT((bump != NULL)  && "Internal Error: 'bump_set_capacity' called on NULL bump");
 
     set_size(&(bump->as.block_representation), size);
+}
+
+
+
+
+/*
+ * Get raw chunk size from slab
+ * Extracts and assembles the 8-bit raw chunk size representation.
+ */
+static inline size_t slab_get_chunk_raw(const Slab *slab) {
+    EM_ASSERT((slab != NULL) && "Internal Error: 'slab_get_chunk_raw' called on NULL slab");
+
+    uintptr_t chunk_part_1 = slab->as.self.capacity_and_chunk_low & EMSLAB_CHUNK_LOW_MASK;
+    uintptr_t chunk_part_2 = (slab->as.self.free_index_and_chunk_high & EMSLAB_CHUNK_HIGH_MASK) << EMSLAB_CHUNK_HIGH_ASSEMBLY_SHIFT;
+    
+    return (size_t)((chunk_part_2 | chunk_part_1) + 1);
+}
+
+/*
+ * Set raw chunk size for slab
+ * Stores the 8-bit compressed chunk size into the fragmented header fields.
+ */
+static inline void slab_set_chunk_raw(Slab *slab, size_t raw_chunk) {
+    EM_ASSERT((slab != NULL)     && "Internal Error: 'slab_set_chunk_raw' called on NULL slab");
+    EM_ASSERT((raw_chunk < 256)  && "Internal Error: 'slab_set_chunk_raw' raw_chunk exceeds 8-bit limit");
+
+    /* 
+     * WHY DOING THIS? (The Physics of Slab Chunk Compression)
+     *
+     * 1. RATIONALE: Focus on Micro-Allocations
+     * Slab allocators are designed to eliminate metadata overhead for small, 
+     * identical objects (e.g., linked-list nodes, particles, transform matrices).
+     * In high-performance systems, objects larger than 1-2KB are architectural 
+     * outliers; at that scale, the standard 'em_alloc' overhead (16/32 bytes) 
+     * becomes negligible (< 1.5%). Therefore, we deliberately cap the Slab's 
+     * 'chunk_size' to optimize for the common 99% case.
+     *
+     * 2. THE 8-BIT COMPRESSION
+     * To preserve the strict 4-machine-word header required for ABI compatibility 
+     * with the 'Block' structure, we must fit the 'chunk_size' into existing 
+     * reserved bits. By storing the size as a 0-based multiple of the machine word:
+     *   raw_chunk = (aligned_size >> EMMIN_EXPONENT) - 1
+     * we can represent sizes up to 1024 bytes (32-bit) or 2048 bytes (64-bit) 
+     * using only 8 bits.
+     *
+     * 3. STORAGE FRAGMENTATION
+     * We harvest these 8 bits from two different machine words in the header:
+     *   - 5 bits from WORD 0: The unused 'reserved' bits of the capacity field.
+     *   - 3 bits from WORD 3: Carved out from the 'magic/index' field.
+     *
+     * 4. PERFORMANCE: Does the split hurt speed?
+     * NO. A common concern is that reassembling a value from two different words 
+     * is slower than reading a contiguous field. However:
+     *   - Cache Locality: The entire Slab header (32 bytes on x64) fits within 
+     *     HALF of a standard L1 cache line (64 bytes). It is always loaded 
+     *     into the CPU as a single atomic unit.
+     *   - Registers: The 'restrict' qualifier and compiler optimizations allow 
+     *     these words to be moved into registers nearly simultaneously.
+     *   - ALU vs. Memory: Reassembling the size via bitwise AND/OR/SHL takes 
+     *     roughly 1-2 clock cycles—orders of magnitude faster than a single 
+     *     cache miss or even a main memory access. 
+    */
+
+    uintptr_t chunk_part_1 = raw_chunk & EMSLAB_CHUNK_LOW_MASK;
+    uintptr_t chunk_part_2 = (raw_chunk >> EMSLAB_CHUNK_HIGH_ASSEMBLY_SHIFT) & EMSLAB_CHUNK_HIGH_MASK;
+
+    slab->as.self.capacity_and_chunk_low ^= (slab->as.self.capacity_and_chunk_low & EMSLAB_CHUNK_LOW_MASK);
+    slab->as.self.capacity_and_chunk_low |= chunk_part_1;
+
+    slab->as.self.free_index_and_chunk_high ^= (slab->as.self.free_index_and_chunk_high & EMSLAB_CHUNK_HIGH_MASK);
+    slab->as.self.free_index_and_chunk_high |= chunk_part_2;
+}
+
+
+
+/*
+ * Get chunk size from slab
+ * Calculates the actual chunk size in bytes.
+ */
+static inline size_t slab_get_chunk_size(const Slab *slab) {
+    EM_ASSERT((slab != NULL) && "Internal Error: 'slab_get_chunk_size' called on NULL slab");
+
+    return slab_get_chunk_raw(slab) << EMMIN_EXPONENT;
+}
+
+/*
+ * Set chunk size for slab
+ * Automatically aligns the requested size to the machine word, compresses it, 
+ * and stores it into the slab header.
+ */
+static inline void slab_set_chunk_size(Slab *slab, size_t size) {
+    EM_ASSERT((slab != NULL) && "Internal Error: 'slab_set_chunk_size' called on NULL slab");
+    
+    size_t aligned_size = align_up(size, EMMIN_ALIGNMENT);
+    size_t raw_chunk = (aligned_size >> EMMIN_EXPONENT) - 1;
+    
+    slab_set_chunk_raw(slab, raw_chunk);
+}
+
+
+
+/*
+ * Get capacity of Slab
+ * Extracts the total size allocated for the slab representation.
+ */
+static inline size_t slab_get_capacity(const Slab *slab) {
+    EM_ASSERT((slab != NULL) && "Internal Error: 'slab_get_capacity' called on NULL slab");
+
+    return get_size(&(slab->as.block_representation));
+}
+
+
+
+/*
+ * Get free index from slab
+ * Extracts the 1-based index of the next free chunk.
+ */
+static inline size_t slab_get_index(const Slab *slab) {
+    EM_ASSERT((slab != NULL) && "Internal Error: 'slab_get_index' called on NULL slab");
+
+    return (size_t)((slab->as.self.free_index_and_chunk_high & EMSLAB_INDEX_MASK) >> EMSLAB_INDEX_SHIFT);
+}
+
+/*
+ * Set free index for slab
+ * Updates the 1-based index of the next free chunk.
+ */
+static inline void slab_set_index(Slab *slab, size_t index) {
+    EM_ASSERT((slab != NULL)                                 && "Internal Error: 'slab_set_index' called on NULL slab");
+    EM_ASSERT((index <= (UINTPTR_MAX >> EMSLAB_INDEX_SHIFT)) && "Internal Error: 'slab_set_index' index exceeds bit-packing capacity");
+    
+    /* 
+     * WHY DOING THIS? (Index Compression & 1-Based Logic)
+     *
+     * 1. THE BIT TRADE-OFF
+     * To store the upper 3 bits of the 'chunk_size' (Chunk High) without increasing 
+     * header size, we occupy the 3 least significant bits of WORD 3. The 
+     * 'Free Index' starts from the 4th bit (EMSLAB_INDEX_SHIFT = 3). 
+     * This leaves:
+     *   - 32-bit systems: 32 - 3 = 29 bits for the index.
+     *   - 64-bit systems: 64 - 3 = 61 bits for the index.
+     *
+     * 2. DOES THIS LIMITATION HURT?
+     * ABSOLUTELY NOT. Even on 32-bit systems, the limits are massive:
+     *   - Max Index: 2^29 - 1 = ~536 million chunks.
+     *   - Even with the smallest 4-byte chunk, a Slab would need 2 GiB of 
+     *     contiguous memory to exhaust the index. Since the entire Easy Memory 
+     *     system on 32-bit is capped at 512 MiB (due to its own capacity packing), 
+     *     we will hit the system's physical limit long before the index overflows.
+     *   - On 64-bit: 2^61 - 1 is an astronomical number of chunks. We would 
+     *     run out of atoms in a CPU before exhausting this range.
+     *
+     * 3. 1-BASED INDEXING & HYBRID STATE-MACHINE
+     * We use 1-based indexing (where 0 means "Slab is Full") to enable 
+     * O(1) creation via a Lazy-Bump strategy:
+     *   - UNINITIALIZED (Bump Mode): If a chunk's internal value matches its 
+     *     own 1-based index, it is "virgin" memory. This allows the Slab 
+     *     to advance like a Bump allocator without pre-linking chunks.
+     *   - RECYCLED (Free-List Mode): Once freed, the chunk stores the index 
+     *     of the previous list head. Its value no longer matches its index, 
+     *     signaling it's now a standard linked-list node.
+    */
+
+    size_t offset;
+    (void)offset;
+
+    EM_ASSERT((index == 0 || 
+              (safe_mul(index - 1, slab_get_chunk_size(slab), &offset) && offset < slab_get_capacity(slab))) && 
+              "Internal Error: 'slab_set_index' index out of logical bounds");
+
+    uintptr_t preserved_bits = slab->as.self.free_index_and_chunk_high & EMSLAB_CHUNK_HIGH_MASK;
+    slab->as.self.free_index_and_chunk_high = (index << EMSLAB_INDEX_SHIFT) | preserved_bits;
 }
 
 
@@ -2533,6 +2930,48 @@ static inline Bump *bump_create_internal(EM *EM_RESTRICT parent_em, size_t size,
     return bump;
 }
 
+/*
+ * Internal Slab allocator creation core
+ * Orchestrates the initialization of the Slab state machine.
+ */
+static inline Slab *slab_create_internal(EM *EM_RESTRICT parent_em, size_t slab_size, size_t chunk_size, AllocFunc allocator) {
+    EM_CHECK((parent_em != NULL),                             NULL, "Internal Error: 'slab_create_internal' called with NULL parent easy memory");
+    EM_CHECK((slab_size <= EMMAX_SIZE),                       NULL, "Internal Error: 'slab_create_internal' called with too big requested size");
+    EM_CHECK((slab_size >= EM_MIN_BUFFER_SIZE),               NULL, "Internal Error: 'slab_create_internal' called with too small requested size");
+    EM_CHECK((slab_size >= chunk_size),                       NULL, "Internal Error: 'slab_create_internal' called with requested chunk size bigger than slab size");
+    EM_CHECK((chunk_size > 0),                                NULL, "Internal Error: 'slab_create_internal' called with requested chunk size smaller than pointer size");
+    EM_CHECK((chunk_size <= (size_t)(256 << EMMIN_EXPONENT)), NULL, "Internal Error: 'slab_create_internal' called with too big requested chunk size");
+    
+    /*
+     * Why Hybrid Lazy-Bump / Free-List?
+     * Conventional slab allocators suffer from O(N) creation time due to the need 
+     * to pre-link all chunks into a free-list. This implementation achieves O(1) 
+     * initialization by using 1-based self-referential indexing.
+     *
+     * Logic:
+     * - If (chunk_content == index): The chunk is "virgin" memory. It acts as a 
+     *   Bump allocator frontier, and the allocator lazily initializes the 
+     *   next chunk index only when needed.
+     * - If (chunk_content != index): The chunk has been recycled. It stores 
+     *    the index of the next element in a standard singly-linked Free-List.
+    */
+
+    void *data = allocator(parent_em, slab_size);
+    if (!data) return NULL;
+
+    Slab *slab = (Slab *)((char *)data - sizeof(Slab));
+
+    slab->as.self.em = parent_em;
+
+    slab_set_chunk_size(slab, chunk_size);
+    slab_set_index(slab, 1);
+
+    uintptr_t *first_chunk = (uintptr_t *)data;
+    *first_chunk = 1;
+
+    return slab;
+}
+
 
 
 
@@ -2898,9 +3337,14 @@ EMDEF void *em_calloc(EM *EM_RESTRICT em, size_t nmemb, size_t size) {
     EM_CHECK((em != NULL),                 NULL, "Internal Error: 'em_calloc' called on NULL easy memory");
     EM_CHECK((nmemb > 0),                  NULL, "Internal Error: 'em_calloc' called on zero nmemb");
     EM_CHECK((size > 0),                   NULL, "Internal Error: 'em_calloc' called on zero size");
-    EM_CHECK(((SIZE_MAX / nmemb) >= size), NULL, "Internal Error: 'em_calloc' detected size overflow");
+    
+    size_t total_size;
+    bool success = safe_mul(nmemb, size, &total_size);
+    
+    EM_CHECK(success, NULL, "Internal Error: 'em_calloc' detected size overflow");
 
-    size_t total_size = nmemb * size;
+    (void)success;
+
     void *ptr = em_alloc(em, total_size);
     if (ptr) {
         memset(ptr, 0, total_size); // Zero-initialize the allocated memory
@@ -3788,6 +4232,326 @@ EMDEF void em_bump_destroy(Bump *bump) {
 
     em_free_block_full(bump_get_em(bump), (Block *)(void *)bump);
 }
+
+
+
+
+
+/*
+ * Create a Slab Allocator
+ *
+ * Initializes a fixed-size block pool (Slab) within a parent Easy Memory instance.
+ * Ideal for high-performance scenarios requiring thousands of identical, small 
+ * objects where individual block metadata overhead would be prohibitive.
+ *
+ * Zero-Overhead Header (ABI Compatibility):
+ *   The Slab and Block structures are strictly ABI compatible. The allocator 
+ *   hijacks the parent's block header to store its internal state (free index, 
+ *   chunk size, and parent link). This ensures that 100% of the memory 
+ *   allocated from the parent is directly usable for object storage.
+ *
+ * Performance:
+ *   - Creation: O(1) if carved from the tail, O(log n) if from the free-tree.
+ *   - Internal Init: O(1). Uses a lazy hybrid Bump/Free-List state machine 
+ *     to avoid the O(N) cost of zeroing or linking chunks during creation.
+ *
+ * Capacity Limits:
+ *   - 'chunk_size' is automatically aligned up to the machine word (4/8 bytes).
+ *   - Maximum 'chunk_size' is 1024 bytes (32-bit) or 2048 bytes (64-bit), 
+ *     limited by 8-bit size compression in the header.
+ *   - Minimum 'slab_size' must accommodate at least one chunk + Slab header.
+ *
+ * Parameters:
+ *   - parent_em:  Pointer to the active parent Easy Memory instance.
+ *   - slab_size:  Total memory capacity to reserve for the slab.
+ *   - chunk_size: Physical size of each individual allocation (in bytes).
+ *
+ * Returns:
+ *   - Pointer to the initialized Slab allocator, or NULL if allocation fails.
+ *
+ * Safety & Behavior:
+ *   - EM_POLICY_CONTRACT: Triggers EM_ASSERT on NULL parent or invalid sizes.
+ *   - EM_POLICY_DEFENSIVE: Gracefully returns NULL on any invalid input, 
+ *     detected integer overflows, or memory exhaustion.
+ */
+EMDEF Slab *em_slab_create(EM *EM_RESTRICT parent_em, size_t slab_size, size_t chunk_size) {
+    return slab_create_internal(parent_em, slab_size, chunk_size, em_alloc);
+}
+
+/*
+ * Create a Scratch Slab Allocator
+ *
+ * Initializes a fixed-size block pool at the extreme physical end (highest 
+ * addresses) of the parent instance.
+ *
+ * Performance:
+ *   - Creation: O(1) Constant Time. Instantly reserves the parent's tail space.
+ *   - Destruction: O(1) Constant Time. Instantly restores the parent's free tail.
+ *
+ * Constraints:
+ *   - Only ONE active scratchpad allocation (raw, arena, bump, or slab) 
+ *     is allowed at a time per Easy Memory instance.
+ *   - Current scratch resource must be destroyed before creating a new one.
+ *
+ * Parameters:
+ *   - parent_em:  Pointer to the active parent instance.
+ *   - slab_size:  Total capacity to carve out from the parent's end.
+ *   - chunk_size: Physical size of each individual allocation.
+ *
+ * Returns:
+ *   - Pointer to the scratch Slab instance, or NULL on failure.
+ * 
+ * Safety & Behavior:
+ *   - EM_POLICY_CONTRACT: Triggers EM_ASSERT on NULL parent or invalid sizes.
+ *   - EM_POLICY_DEFENSIVE: Gracefully returns NULL on any invalid input, 
+ *     detected integer overflows, or memory exhaustion.
+ */
+EMDEF Slab *em_slab_create_scratch(EM *EM_RESTRICT parent_em, size_t slab_size, size_t chunk_size) {
+    return slab_create_internal(parent_em, slab_size, chunk_size, em_alloc_scratch);
+}
+
+
+/*
+ * Allocate a chunk from the Slab
+ *
+ * Provides a fixed-size memory chunk from the pool in strict O(1) time.
+ *
+ * Performance:
+ *   - O(1) Constant Time. 
+ *   - Leverages a hybrid Lazy-Bump / Free-List state machine. Uninitialized 
+ *     memory acts as a bump allocator. Previously freed chunks act as an 
+ *     index-based singly linked list.
+ *
+ * Alignment:
+ *   - All chunks are naturally aligned to the machine-word boundary 
+ *     (EMMIN_ALIGNMENT) due to internal rounding of 'chunk_size'.
+ *
+ * Parameters:
+ *   - slab: Pointer to the active Slab allocator instance.
+ *
+ * Returns:
+ *   - Pointer to the allocated memory chunk.
+ *   - Returns NULL if the slab is exhausted (FULL).
+ *
+ * Safety & Behavior:
+ *   - EM_POLICY_CONTRACT: Triggers EM_ASSERT if 'slab' is NULL or state is corrupted.
+ *   - EM_POLICY_DEFENSIVE: Performs hardware-accelerated overflow checks 
+ *     to validate internal free-list indices. If corruption is detected 
+ *     (e.g., due to user buffer overflows), the function safely returns NULL.
+ */
+EMDEF void *em_slab_alloc(Slab *EM_RESTRICT slab) {
+    EM_CHECK((slab != NULL), NULL, "Internal Error: 'em_slab_alloc' called on NULL slab");
+
+    size_t index = slab_get_index(slab);
+    if (index == 0) return NULL; 
+
+    size_t chunk_size = slab_get_chunk_size(slab);
+    size_t capacity = slab_get_capacity(slab);
+    uintptr_t data_start = (uintptr_t)slab + sizeof(Slab);
+    
+    size_t offset;
+    bool success = safe_mul(index - 1, chunk_size, &offset);
+    
+    EM_CHECK(success && offset < capacity, NULL, 
+             "Internal Error: 'em_slab_alloc' detected corrupted free-list index");
+    
+    (void)success;
+
+    uintptr_t *cur_chunk = (uintptr_t *)(data_start + offset);
+    size_t val = (size_t)(*cur_chunk);
+    
+    size_t new_index = val;
+
+    if (val == index) { 
+        size_t next_idx = index + 1;
+        size_t next_offset = offset + chunk_size;
+        
+        if (next_offset + chunk_size <= capacity) {
+            *(uintptr_t *)(data_start + next_offset) = next_idx;
+            new_index = next_idx;
+        } else {
+            new_index = 0; 
+        }
+    }
+
+    slab_set_index(slab, new_index);
+
+    return (void *)cur_chunk;
+}
+
+
+/*
+ * Free a chunk back to the Slab
+ *
+ * Reclaims a previously allocated chunk and restores it to the pool's 
+ * internal Free-List for immediate reuse.
+ *
+ * Performance:
+ *   - O(1) Constant Time.
+ *   - Employs a data-dependent optimization by reducing address magnitudes 
+ *     before calling hardware division, accelerating the hot-path on many CPUs.
+ *
+ * Constraints:
+ *   - The 'pointer' MUST have been previously allocated from the same Slab.
+ *   - The 'pointer' MUST be exactly aligned to a valid chunk boundary.
+ *
+ * Parameters:
+ *   - slab:    Pointer to the active Slab allocator instance.
+ *   - pointer: Pointer to the memory chunk to be released.
+ *
+ * Safety & Behavior:
+ *   - EM_POLICY_CONTRACT: 
+ *       Triggers EM_ASSERT on NULL pointers, double frees, or out-of-bounds addresses.
+ *   - EM_POLICY_DEFENSIVE: 
+ *       Performs robust bounds checking. Safely aborts the operation if the 
+ *       pointer is unaligned, does not belong to the slab, or if a sequential 
+ *       double-free is detected.
+ */
+EMDEF void em_slab_free(Slab *EM_RESTRICT slab, void *pointer) {
+    EM_CHECK_V((slab != NULL),    "Internal Error: 'em_slab_free' called on NULL slab");
+    EM_CHECK_V((pointer != NULL), "Internal Error: 'em_slab_free' called on NULL pointer");
+    
+    uintptr_t ptr_val = (uintptr_t)pointer;
+
+    EM_CHECK_V((ptr_val % EMMIN_ALIGNMENT == 0), "Internal Error: 'em_slab_free' misaligned pointer");
+    
+    uintptr_t data_start = (uintptr_t)slab + sizeof(Slab);
+    
+    EM_CHECK_V((ptr_val >= data_start), "Internal Error: 'em_slab_free' pointer before slab payload");
+    
+    size_t offset = ptr_val - data_start;
+    EM_CHECK_V((offset < slab_get_capacity(slab)), "Internal Error: 'em_slab_free' pointer beyond slab capacity");
+    
+    /* 
+     * WHY DOING THIS? (Data-Dependent Division Optimization)
+     *
+     * 1. THE COST OF DIVISION
+     * On almost all CPU architectures, the DIV/IDIV instruction is the most 
+     * expensive ALU operation (often 20-40+ cycles). Unlike multiplication, 
+     * division latency is often "data-dependent."
+     *
+     * 2. THE RADIX PHYSICS
+     * Hardware dividers (especially in embedded ARM Cortex, RISC-V, and older x86) 
+     * frequently use iterative Radix-2 or Radix-4 algorithms. These units can 
+     * exit their internal loops early if the high-order bits of the dividend 
+     * and divisor are zero. Smaller numbers = fewer iterations = faster execution.
+     *
+     * 3. EXPLOITING ALIGNMENT
+     * We know that both 'offset' and 'chunk_size' are strictly aligned to 
+     * EMMIN_ALIGNMENT (4 or 8 bytes). This means their 2 or 3 least significant 
+     * bits are GUARANTEED to be zero. 
+     *
+     * 4. THE OPTIMIZATION
+     * Instead of dividing large byte-addresses:
+     *   index = offset_bytes / chunk_bytes
+     * We shift both values right by EMMIN_EXPONENT:
+     *   index = (offset >> EXP) / (chunk_raw)
+     *
+     * This achieves two things:
+     *   - Accuracy: We divide "units of machine words" instead of raw bytes.
+     *   - Speed: We pass significantly smaller values to the hardware divider, 
+     *     triggering early-exit logic in the ALU and accelerating the 
+     *     deallocation path without changing the mathematical result.
+    */
+
+    size_t chunk_raw = slab_get_chunk_raw(slab);
+    size_t offset_raw = offset >> EMMIN_EXPONENT;
+    
+    size_t remainder = offset_raw % chunk_raw;
+    size_t chunk_index = offset_raw / chunk_raw;
+    
+    EM_CHECK_V((remainder == 0), "Internal Error: 'em_slab_free' unaligned pointer");
+    
+    size_t freed_index = chunk_index + 1;
+    size_t old_head_idx = slab_get_index(slab);
+    
+    EM_CHECK_V((freed_index != old_head_idx), "Internal Error: 'em_slab_free' double free detected");
+
+    *(uintptr_t *)pointer = old_head_idx;
+    slab_set_index(slab, freed_index);
+}
+
+/*
+ * Reset the Slab Allocator
+ *
+ * Instantly invalidates all active allocations and restores the allocator 
+ * to its initial state without releasing memory back to the parent.
+ *
+ * Performance:
+ *   - O(1) Constant Time. Only the primary free index is updated.
+ *
+ * Parameters:
+ *   - slab: Pointer to the Slab instance to be reset.
+ *
+ * Safety & Behavior:
+ *   - EM_POLICY_CONTRACT: Triggers EM_ASSERT if 'em' is NULL.
+ *   - EM_POLICY_DEFENSIVE: Safely returns if 'em' is NULL.
+ *
+ * Note: After a reset, ALL previously allocated pointers from this 
+ * instance become invalid, though the memory is not physically cleared.
+ * Use em_slab_reset_zero if zero-initialization is required.
+ */
+EMDEF void em_slab_reset(Slab *EM_RESTRICT slab) {
+    EM_CHECK_V((slab != NULL), "Internal Error: 'em_slab_reset' called on NULL slab");
+
+    slab_set_index(slab, 1);
+    
+    uintptr_t *first_chunk = (uintptr_t *)((char *)slab + sizeof(Slab));
+    *first_chunk = 1;
+}
+
+/*
+ * Reset the Slab and zero-initialize memory
+ *
+ * Performs a metadata reset followed by a full-span zeroing of the 
+ * slab's payload area.
+ *
+ * Performance:
+ *   - O(N) Linear Time, where N is the total capacity of the slab.
+ *
+ * Parameters:
+ *   - slab: Pointer to the Slab instance to be reset and zeroed.
+ *
+ * Safety & Behavior:
+ *   - Subject to the same Safety Policies as em_reset.
+ */
+EMDEF void em_slab_reset_zero(Slab *EM_RESTRICT slab) {
+    EM_CHECK_V((slab != NULL), "Internal Error: 'em_slab_reset_zero' called on NULL slab");
+
+    em_slab_reset(slab);
+    
+    void *data_start = (void *)((char *)slab + sizeof(Slab));
+    memset(data_start, 0, slab_get_capacity(slab));
+}
+
+ /*
+ * Destroy a Slab Allocator
+ *
+ * Reclaims the entire memory block used by the slab and returns it 
+ * to the parent Easy Memory instance.
+ *
+ * Performance:
+ *   - O(log n). 
+ *   - Rationale: Identification of the parent arena is O(1) via the direct 
+ *     internal pointer. The O(log n) complexity arises from potential 
+ *     coalescing (merging) with adjacent free blocks, which requires 
+ *     detaching neighbors from the parent's LLRB tree.
+ *
+ * Parameters:
+ *   - slab: Pointer to the Slab instance to be destroyed.
+ *
+ * Safety & Behavior:
+ *   - Subject to the same Safety Policies as em_reset.
+ * 
+ * Note: After this call, the 'slab' pointer and ALL memory chunks 
+ * previously allocated from it become logically invalid.
+ */
+EMDEF void em_slab_destroy(Slab *slab) {
+    EM_CHECK_V((slab != NULL), "Internal Error: 'em_slab_destroy' called on NULL slab");
+
+    em_free_block_full(slab->as.self.em, (Block *)slab);
+}
+
 
 
 #ifdef DEBUG

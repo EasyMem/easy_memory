@@ -114,13 +114,13 @@ static void test_slab_operations_normal(void) {
 }
 
 static void test_slab_operations_garbage(void) {
+#if EM_SAFETY_POLICY == EM_POLICY_DEFENSIVE
     TEST_PHASE("Slab Operations - Sad Path & Corruption");
     
     EM *em = em_create(1024);
     Slab *slab = em_slab_create(em, 512, 32);
+    
     void *valid_chunk = em_slab_alloc(slab);
-
-#if EM_SAFETY_POLICY == EM_POLICY_DEFENSIVE
     TEST_CASE("Free NULL pointer");
     em_slab_free(slab, NULL);
     ASSERT(true, "Should not crash on NULL free");
@@ -143,10 +143,10 @@ static void test_slab_operations_garbage(void) {
     em_slab_free(slab, valid_chunk);
     em_slab_free(slab, valid_chunk); // Second call should be caught by O(1) check
     ASSERT(true, "Should not crash on sequential double free");
-#endif
-
+    
     em_slab_destroy(slab);
     em_destroy(em);
+#endif
 }
 
 

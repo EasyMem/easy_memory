@@ -2959,7 +2959,7 @@ static inline Slab *slab_create_internal(EM *EM_RESTRICT parent_em, size_t slab_
     void *data = allocator(parent_em, slab_size);
     if (!data) return NULL;
 
-    Slab *slab = (Slab *)((char *)data - sizeof(Slab));
+    Slab *slab = (Slab *)(void *)((char *)data - sizeof(Slab));
 
     slab->as.self.em = parent_em;
 
@@ -4357,7 +4357,7 @@ EMDEF void *em_slab_alloc(Slab *EM_RESTRICT slab) {
     
     (void)success;
 
-    uintptr_t *cur_chunk = (uintptr_t *)(data_start + offset);
+    uintptr_t *cur_chunk = (uintptr_t *)(void *)(data_start + offset);
     size_t val = (size_t)(*cur_chunk);
     
     size_t new_index = val;

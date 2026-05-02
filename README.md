@@ -72,9 +72,10 @@ The system is subjected to exhaustive verification across diverse environments a
 
 *   **Sanitizer Suite:** Verified with **ASan** (Address), **UBSan** (Undefined Behavior), and **LSan** (Leak) across multiple architectures to ensure memory integrity and zero leaks.
 *   **Valgrind Memcheck:** **0 errors from 0 contexts**. Clean diagnostic logs ensure that library internals do not interfere with application-level debugging.
+*   **Multi-Policy Verification:** Every architecture is independently tested using both `EM_POLICY_CONTRACT` (logic-only) and `EM_POLICY_DEFENSIVE` (runtime-checked) modes to guarantee consistent behavior regardless of safety settings.
 *   **Optimization Resilient:** Proven stability across aggressive compiler optimization levels:
-    *   **GCC/Clang:** `-O1`, `-O2`, `-O3`, `-Os`, and `-Oz`.
-    *   **MSVC:** `/O1`, `/O2`, and `/Ox`.
+    *   **GCC/Clang:** `-O0` (debug), `-O1`, `-O2`, `-O3`, `-Os`, and `-Oz`.
+    *   **MSVC:** `/Od` (debug), `/O1`, `/O2`, and `/Ox`.
     *   Full compliance with **Strict Aliasing** rules guaranteed.
 *   **Pedantic Compilation:** Strictly enforced "Warnings-as-Errors" policy (`-Werror`) using an extensive flag set:
     *   **Safety & Alignment:** `-Wshadow`, `-Wconversion`, `-Wundef`, `-Wstrict-aliasing=2`, `-Wcast-align`, `-Wpadded`.
@@ -485,7 +486,7 @@ The library is continuously integrated and tested across a matrix of OSs and Arc
 | :--- | :--- | :--- | :--- |
 | `x86_64`  | Little  | Windows / Linux / macOS | ![x86_64 Status](https://img.shields.io/github/actions/workflow/status/EasyMem/easy_memory/ci.yml?branch=main&job=build-and-test-x86_64&label=x86_64&logo=intel&logoColor=white) |
 | `x86_32`  | Little  | Windows / Linux | ![x86_32 Status](https://img.shields.io/github/actions/workflow/status/EasyMem/easy_memory/ci.yml?branch=main&job=build-and-test-32bit&label=x86_32&logo=intel&logoColor=white) |
-| `AArch64` | Little  | Linux (Modern & Strict)  | ![ARM64 Modern Status](https://img.shields.io/github/actions/workflow/status/EasyMem/easy_memory/ci.yml?branch=main&job=build-and-test-arm64-modern&label=aarch64&logo=arm&logoColor=white) |
+| `AArch64` | Little  | Windows (Native ARM64) / Linux | ![ARM64 Modern Status](https://img.shields.io/github/actions/workflow/status/EasyMem/easy_memory/ci.yml?branch=main&job=build-and-test-arm64-modern&label=aarch64&logo=arm&logoColor=white) |
 | `ARMv7`   | Little  | Linux | ![ARM32 Status](https://img.shields.io/github/actions/workflow/status/EasyMem/easy_memory/ci.yml?job=Ubuntu%20%7C%20ARM32%20(armv7)%20%7C%20GCC&label=armv7&logo=arm&logoColor=white) |
 | `s390x`   | **Big** | Linux | ![Big Endian Status](https://img.shields.io/github/actions/workflow/status/EasyMem/easy_memory/ci.yml?branch=main&job=build-and-test-big-endian&label=s390x&logo=ibm&logoColor=white) |
 

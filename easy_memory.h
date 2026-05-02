@@ -961,7 +961,7 @@ Slab *em_slab_create(EM *EM_RESTRICT parent_em, size_t slab_size, size_t chunk_s
 EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED
 Slab *em_slab_create_scratch(EM *EM_RESTRICT parent_em, size_t slab_size, size_t chunk_size);
 
-EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED EM_ATTR_ALLOC_SIZE(2, chunk_size) // Note: chunk_size validation is logical here
+EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED
 void *em_slab_alloc(Slab *EM_RESTRICT slab);
 
 EMDEF void em_slab_free(Slab *EM_RESTRICT slab, void *pointer);

@@ -48,7 +48,9 @@
 *   **Bit-Packed Efficiency:** Alignment exponents are packed into the size field, and flags utilize pointer tagging. This results in minimal metadata overhead per block.
 *   **Modular Sub-Allocators:** Designed as a foundation for specialized allocators. All sub-allocators have **zero-overhead creation** (cost equivalent to a single standard allocation).
     *   **Bump:** O(1) linear allocator (Available).
-    *   *Stack / Slab:* (Coming soon).
+    *   **Slab:** O(1) fixed-size block pool with lazy initialization (Available).
+    *   *Stack / Queue:* (Coming soon).
+*   **Hardware-Accelerated Safety:** Utilizes CPU ALU flags and compiler intrinsics for zero-cost integer overflow detection in `em_calloc` and sub-allocator logic.
 *   **Scoped Memory:** Supports `em_create_nested` for hierarchical memory management. Freeing a parent scope instantly invalidates all children with O(1) complexity.
 *   **Tail-End Scratchpad:** Instantly reserves a block at the highest memory address (**O(1)**). Ideal for temporary workspaces to prevent fragmentation of the main heap. Fully integrated with standard `em_free`.
 *   **Concurrency Model:** Intentionally lock-free and single-threaded to avoid mutex overhead. Designed for **Thread-Local Storage (TLS)** patterns (one `EM` instance per thread).
@@ -99,13 +101,13 @@ At its core, `easy_memory` is a hierarchical system. It abstracts complex memory
    │ (core)  │                 │ allocators │               │   (temp)   │
    └────┬────┘                 └─────┬──────┘               └────────────┘
         │                            │
-        ▼                   ┌────────┼────────┐
-   ┌───────────┐            │        │        │
-   │  Adaptive │            ▼        ▼        ▼
-   │ BUMP O(1) │        ┌──────┐ ┌───────┐ ┌──────┐
-   │ LIFO O(1) │        │ Bump │ │ Stack │ │ Slab │
-   │ O(logn)   │        │ O(1) │ │ O(1)  │ │ O(1) │
-   └───────────┘        └──────┘ └───────┘ └──────┘
+        ▼              ┌────────┬────┴────┬─────────┐
+   ┌───────────┐       │        │         │         │
+   │  Adaptive │       ▼        ▼         ▼         ▼
+   │ BUMP O(1) │   ┌──────┐ ┌────────┐ ┌──────┐ ┌────────┐
+   │ LIFO O(1) │   │ Bump │ │ Stack* │ │ Slab │ │ Queue* │
+   │ O(logn)   │   │ O(1) │ │  O(1)  │ │ O(1) │ │  O(1)  │
+   └───────────┘   └──────┘ └────────┘ └──────┘ └────────┘
 ```
 
 ### 1. The Core (Arena)
@@ -128,7 +130,8 @@ A mechanism to allocate a **single dedicated block** at the very end of the memo
 ### 3. Sub-Allocators
 Specialized tools for specific allocation patterns. They are created *inside* a parent Core/Arena with zero overhead.
 *   **Bump Allocator:** A linear allocator that only moves a pointer forward. Ideal for frame-based rendering or parsing where deallocation happens all at once.
-*   *(Planned: Stack & Slab allocators for LIFO and fixed-size object pools).*
+*   **Slab Allocator:** A fixed-size pool that eliminates metadata overhead for small, identical objects. Uses a hybrid Lazy-Bump / Free-List strategy for O(1) performance.
+*   *(Planned: Stack & Queue allocators for LIFO and FIFO patterns).*
 
 ## Architectural Philosophy
 
@@ -259,7 +262,28 @@ while (game_running) {
 em_bump_destroy(bump);
 ```
 
-### 6. Static / Bare Metal (No Malloc)
+### 6. Slab Sub-Allocator (Fixed-Size Pool)
+Ideal for high-density allocations of identical objects (particles, nodes, matrices). Eliminates per-object metadata overhead.
+
+```c
+// Create a Slab for 1000 particles (64 bytes each)
+// Total size is 64KB, carved out from the parent arena
+Slab *particle_pool = em_slab_create(main_em, 1000 * 64, 64);
+
+// O(1) Allocation
+Particle *p1 = (Particle *)em_slab_alloc(particle_pool);
+
+// O(1) Deallocation (returns chunk to the internal Free-List)
+em_slab_free(particle_pool, p1);
+
+// Bulk Reset: Instantly invalidates all chunks
+em_slab_reset(particle_pool);
+
+// Destroy: Returns all memory back to main_em
+em_slab_destroy(particle_pool);
+```
+
+### 7. Static / Bare Metal (No Malloc)
 Ideal for microcontrollers (STM32, AVR, RP2040, ESP32) or OS kernels.
 
 ```c
@@ -286,7 +310,7 @@ int main(void) {
 }
 ```
 
-### 7. Scratchpad (Temporary Tail Allocations | Lifecycle Isolation)
+### 8. Scratchpad (Temporary Tail Allocations | Lifecycle Isolation)
 The scratchpad provides a universal mechanism to reserve memory at the extreme tail (highest address) of an EM instance in strict **O(1)** time. By anchoring temporary allocations here, contiguous space is preserved for the main heap.
 
 *   **Universal API:** Every creation function has a `_scratch` variant (`em_alloc_scratch`, `em_bump_create_scratch`, `em_create_scratch`).
@@ -319,7 +343,7 @@ em_bump_destroy(inner_bump);
 em_destroy(temp_scope); // Instantly restores the 256KB tail in root_em
 ```
 
-### 8. Visual Debugging
+### 9. Visual Debugging
 The library includes a built-in terminal visualizer to inspect memory fragmentation and layout.
 
 ```c
@@ -328,7 +352,7 @@ The library includes a built-in terminal visualizer to inspect memory fragmentat
 #include "easy_memory.h"
 
 int main(void) {
-    EM *em = em_create(1024 * 64);
+    EM *em = em_create(1024 * 4);
     
     em_alloc(em, 1024);
     void *ptr = em_alloc(em, 512);
@@ -342,6 +366,8 @@ int main(void) {
     return 0;
 }
 ```
+#### Output Example:
+![alt text](.github/assets/visualization.png)
 
 ## Configuration
 
@@ -426,14 +452,14 @@ The current implementation of the LLRB tree (insertion, deletion, and balancing)
 *   **Call for Contribution:** Switching the LLRB logic to an **iterative (loop-based)** implementation is a high-priority goal to guarantee fixed stack usage. If you enjoy algorithmic challenges and non-recursive tree traversals, **Pull Requests are highly welcome!**
 
 ### Upcoming Features
-The following features are planned for future releases, prioritized by architectural importance:
+The following features are planned for future releases:
 
+- [ ] **Iterative LLRB Tree:** Replacing recursive algorithms with fixed-stack iteration to guarantee safety on tiny embedded stacks. (High Priority).
 - [ ] **New Sub-Allocators:**
-    - **`Stack` Allocator:** A strict LIFO (Last-In-First-Out) allocator for temporary scopes, faster and lighter than nested arenas.
-    - **`Slab` Allocator:** A fixed-size block pool, ideal for reducing fragmentation when allocating many identical objects.
-- [ ] **Benchmark Suite:** A comprehensive set of automated benchmarks to verify performance claims against `malloc` and other allocators across different architectures.
-- [ ] **Statistics & Telemetry:** Optional, configurable collection of runtime metrics (total allocated bytes, high water mark/peak usage, fragmentation index) to aid in profiling.
-- [ ] **`Queue` Sub-Allocator:** A specialized FIFO (First-In-First-Out) allocator implementation (Ring Buffer strategy).
+    - **`Stack` Allocator:** Strict LIFO allocator for scoped temporary objects.
+    - **`Queue` Allocator:** FIFO allocator using a Ring Buffer strategy.
+- [ ] **Cache Coloring:** Optional cache-line offset optimization for Slab allocators to prevent thrashing in SoA/ECS patterns.
+- [ ] **Metrics & Telemetry:** Built-in tracking for high-water marks and fragmentation index.
 
 ## Build Status & Verified Platforms
 

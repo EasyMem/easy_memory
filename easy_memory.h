@@ -4461,6 +4461,7 @@ EMDEF void em_slab_free(Slab *EM_RESTRICT slab, void *pointer) {
     size_t chunk_index = offset_raw / chunk_raw;
     
     EM_CHECK_V((remainder == 0), "Internal Error: 'em_slab_free' unaligned pointer");
+    (void)remainder;
     
     size_t freed_index = chunk_index + 1;
     size_t old_head_idx = slab_get_index(slab);

@@ -321,8 +321,6 @@ static void test_slab_reset_zero(void) {
     TEST_CASE("Verify slab functionality after reset_zero");
     void *p1_new = em_slab_alloc(slab);
     ASSERT(p1_new == p1, "Slab must re-allocate from the beginning after reset");
-    printf("First chunk address after reset: %p\n", p1_new);
-    printf("Expected first chunk value: %lu\n", *(uintptr_t*)p1_new);
     ASSERT(*(uintptr_t*)p1_new == 1, "First chunk must be reset to Bump mode (index 1)");
 
     em_slab_destroy(slab);

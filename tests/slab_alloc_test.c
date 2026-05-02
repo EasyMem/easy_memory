@@ -285,6 +285,50 @@ static void test_slab_exhaustion_edge_case(void) {
     em_destroy(em);
 }
 
+static void test_slab_reset_zero(void) {
+    TEST_PHASE("Slab Reset Zero Functionality");
+
+    EM *em = em_create(1024);
+    size_t chunk_size = 32;
+    Slab *slab = em_slab_create(em, 256, chunk_size);
+
+    TEST_CASE("Setup and dirtying memory");
+    void *p1 = em_slab_alloc(slab);
+    void *p2 = em_slab_alloc(slab);
+    ASSERT(p1 != NULL && p2 != NULL, "Allocations should succeed");
+    
+    // Fill chunks with non-zero garbage
+    fill_memory_pattern(p1, chunk_size, 0xAA);
+    fill_memory_pattern(p2, chunk_size, 0xBB);
+
+    TEST_CASE("Execute em_slab_reset_zero");
+    em_slab_reset_zero(slab);
+
+    TEST_CASE("Verify zero-initialization");
+    
+    // Check first chunk (p1): it must contain the state marker '1' at the start
+    ASSERT(*(uintptr_t*)p1 == 1, "First chunk must contain state marker 1");
+    
+    // Check the rest of p1 (after the marker)
+    bool p1_rest_is_zero = verify_memory_pattern((char*)p1 + sizeof(uintptr_t), 
+                                                chunk_size - sizeof(uintptr_t), 0x00);
+    ASSERT(p1_rest_is_zero, "Rest of the first chunk must be zeroed");
+
+    // Check second chunk (p2): it must be completely zeroed
+    ASSERT(verify_memory_pattern(p2, chunk_size, 0x00), "Second chunk area must be strictly zeroed");
+
+
+    TEST_CASE("Verify slab functionality after reset_zero");
+    void *p1_new = em_slab_alloc(slab);
+    ASSERT(p1_new == p1, "Slab must re-allocate from the beginning after reset");
+    printf("First chunk address after reset: %p\n", p1_new);
+    printf("Expected first chunk value: %lu\n", *(uintptr_t*)p1_new);
+    ASSERT(*(uintptr_t*)p1_new == 1, "First chunk must be reset to Bump mode (index 1)");
+
+    em_slab_destroy(slab);
+    em_destroy(em);
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0); 
 
@@ -295,6 +339,7 @@ int main(void) {
     test_slab_complex_ordering();
     test_slab_stress();
     test_slab_exhaustion_edge_case();
+    test_slab_reset_zero();
     
     print_test_summary();
     return tests_failed > 0 ? 1 : 0;

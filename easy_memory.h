@@ -4518,10 +4518,10 @@ EMDEF void em_slab_reset(Slab *EM_RESTRICT slab) {
 EMDEF void em_slab_reset_zero(Slab *EM_RESTRICT slab) {
     EM_CHECK_V((slab != NULL), "Internal Error: 'em_slab_reset_zero' called on NULL slab");
 
-    em_slab_reset(slab);
-    
     void *data_start = (void *)((char *)slab + sizeof(Slab));
     memset(data_start, 0, slab_get_capacity(slab));
+    
+    em_slab_reset(slab);
 }
 
  /*

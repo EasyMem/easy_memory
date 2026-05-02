@@ -17,12 +17,13 @@ env:
 jobs:
   # Job 1: Build and test on primary x86_64 platforms
   build-and-test-x86_64:
-    name: ${{ matrix.os }} | x86_64 | ${{ matrix.compiler }}
+    name: ${{ matrix.os }} | x86_64 | ${{ matrix.compiler }} | Policy ${{ matrix.policy }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         compiler: [gcc, clang]
+        policy: [1, 0] # 1 = DEFENSIVE, 0 = CONTRACT
         exclude:
           - os: windows-latest
             compiler: clang
@@ -53,19 +54,19 @@ jobs:
           update: true
           install: mingw-w64-x86_64-toolchain make
 
-      # Build & Test Steps
+      # Build & Test Steps (Passing Policy and forcing Asserts)
       - name: Build and Test with Makefile
         if: runner.os != 'Windows'
-        run: make tests CC=${{ matrix.compiler }}
+        run: make tests CC=${{ matrix.compiler }} EXTRA_CFLAGS="-DEM_SAFETY_POLICY=${{ matrix.policy }} -DEM_ASSERT_STAYS"
       
       - name: Verify CTZ Fallback Logic (Force Generic)
         if: runner.os == 'Linux'
-        run: make test_fallback CC=${{ matrix.compiler }}
+        run: make test_fallback CC=${{ matrix.compiler }} EXTRA_CFLAGS="-DEM_SAFETY_POLICY=${{ matrix.policy }}"
 
       - name: Build and Test with Makefile (Windows/GCC)
         if: runner.os == 'Windows'
         shell: msys2 {0}
-        run: make tests CC=gcc
+        run: make tests CC=gcc EXTRA_CFLAGS="-DEM_SAFETY_POLICY=${{ matrix.policy }} -DEM_ASSERT_STAYS"
 
       # MSVC Smoke Test (Windows Only)
       - name: Build and Test each test file with MSVC
@@ -76,26 +77,26 @@ jobs:
           cd tests
           FOR %%f IN (*.c) DO (
             echo --- Compiling %%f with MSVC ---
-            cl.exe /W4 /WX /DDEBUG /I.. /Fe:%%~nf.exe %%f
+            cl.exe /W4 /WX /DDEBUG /DEM_SAFETY_POLICY=${{ matrix.policy }} /DEM_ASSERT_STAYS /I.. /Fe:%%~nf.exe %%f
             if errorlevel 1 exit /b 1
             echo --- Running %%~nf.exe ---
             call %%~nf.exe
             if errorlevel 1 exit /b 1
           )
             
-      # Valgrind & Codecov (Linux/GCC Only)
+      # Valgrind & Codecov (Linux/GCC Only) - Only run on DEFENSIVE (Policy 1) to get full coverage
       - name: Run Valgrind Memory Check
-        if: runner.os == 'Linux' && matrix.compiler == 'gcc'
+        if: runner.os == 'Linux' && matrix.compiler == 'gcc' && matrix.policy == 1
         run: make valgrind CC=gcc
 
       - name: Build for Coverage
-        if: runner.os == 'Linux' && matrix.compiler == 'gcc'
+        if: runner.os == 'Linux' && matrix.compiler == 'gcc' && matrix.policy == 1
         run: |
           sudo apt-get update && sudo apt-get install -y lcov
           make coverage CC=gcc
 
       - name: Upload coverage to Codecov
-        if: runner.os == 'Linux' && matrix.compiler == 'gcc' && github.repository == 'EasyMem/easy_memory'
+        if: runner.os == 'Linux' && matrix.compiler == 'gcc' && matrix.policy == 1 && github.repository == 'EasyMem/easy_memory'
         uses: codecov/codecov-action@v4
         with:
           files: ./coverage.info
@@ -209,7 +210,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
         compiler: [gcc, clang]
-        opt: [-O1, -O2, -O3, -Os, -Oz]
+        opt: [-O0, -O1, -O2, -O3, -Os, -Oz]
         policy: [1, 0] # 1 = DEFENSIVE, 0 = CONTRACT
         exclude:
           - compiler: gcc
@@ -228,7 +229,7 @@ jobs:
       fail-fast: false
       matrix:
         arch: [x64, x86]
-        opt: [/O1, /O2, /Ox]
+        opt: [/Od, /O1, /O2, /Ox]
         policy: [1, 0]
     
     steps:

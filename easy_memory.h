@@ -4496,7 +4496,7 @@ EMDEF void em_slab_reset(Slab *EM_RESTRICT slab) {
 
     slab_set_index(slab, 1);
     
-    uintptr_t *first_chunk = (uintptr_t *)((char *)slab + sizeof(Slab));
+    uintptr_t *first_chunk = (uintptr_t *)(void *)((char *)slab + sizeof(Slab));
     *first_chunk = 1;
 }
 

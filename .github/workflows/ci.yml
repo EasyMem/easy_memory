@@ -224,11 +224,11 @@ jobs:
   # Job 9: MSVC with different architectures, optimizations and policies
   build-and-test-msvc:
     name: Windows | MSVC | ${{ matrix.arch }} | ${{ matrix.opt }} | Policy ${{ matrix.policy }}
-    runs-on: windows-latest
+    runs-on: ${{ matrix.arch == 'arm64' && 'windows-11-arm' || 'windows-latest' }}
     strategy:
       fail-fast: false
       matrix:
-        arch: [x64, x86]
+        arch: [x64, x86, arm64]
         opt: [/Od, /O1, /O2, /Ox]
         policy: [1, 0]
     
@@ -239,6 +239,8 @@ jobs:
         run: |
           if "${{ matrix.arch }}"=="x86" (
             call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars32.bat"
+          ) else if "${{ matrix.arch }}"=="arm64" (
+            call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsarm64.bat"
           ) else (
             call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
           )

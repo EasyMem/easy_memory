@@ -2622,6 +2622,8 @@ static void em_free_scratch(EM *em, Block *scratch_block) {
     if (get_size(tail) != 0) {
         set_color(scratch_block, EMRED);
         set_is_free(scratch_block, true);
+        set_left_tree(scratch_block, NULL);
+        set_right_tree(scratch_block, NULL);
         set_prev(scratch_block, tail);
         em_set_tail(em, scratch_block);
         set_size(scratch_block, 0);
@@ -2664,7 +2666,7 @@ static void em_free_block_full(EM *em, Block *block) {
         Block *next = next_block(em, block);
 
         // If next block is tail, just set its size to 0 and update tail pointer
-        if (next == tail) {
+        if (next == tail && get_is_free(tail)) {
             set_size(block, 0);
             em_set_tail(em, block);
             result_to_tree = NULL; 
@@ -4149,6 +4151,10 @@ EMDEF void *em_bump_alloc_aligned(Bump *EM_RESTRICT bump, size_t size, size_t al
  */
 EMDEF void em_bump_trim(Bump *EM_RESTRICT bump) {
     EM_CHECK_V((bump != NULL), "Internal Error: 'em_bump_trim' called on NULL bump allocator");
+
+    if (get_is_in_scratch(&(bump->as.block_representation))) {
+        return; 
+    }
 
     EM *parent = bump_get_em(bump);
     size_t parent_align = em_get_alignment(parent);

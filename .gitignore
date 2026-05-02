@@ -59,6 +59,9 @@ tests/bump_alloc_test_*
 tests/em_nested_test_*
 tests/slab_alloc_test_*
 
+# Fuzzers
+fuzzers/*_fuzzer
+
 # Coverage files
 *.gcno
 *.gcda

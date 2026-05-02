@@ -967,6 +967,81 @@ static void test_scratch_em_creation_and_freeing(void) {
     em_destroy(em);
 }
 
+static void test_core_tail_oom_absorption(void) {
+    TEST_PHASE("Core Integrity / Tail OOM Absorption");
+    
+    // 1. Create a small arena
+    EM *em = em_create(1024);
+    ASSERT_QUIET(em != NULL, "Failed to create EM instance");
+
+    // 2. Allocate the first block (acts as the preceding block in the crash scenario)
+    void *p1 = em_alloc(em, 128);
+    ASSERT_QUIET(p1 != NULL, "Failed to allocate the first block");
+
+    // 3. Calculate exact remaining space in the tail and consume it entirely.
+    // Because there is no room left for a new empty tail block header, this allocation
+    // itself becomes the tail, but it is marked as OCCUPIED.
+    size_t remaining = free_size_in_tail(em);
+    void *p2 = em_alloc(em, remaining);
+    ASSERT_QUIET(p2 != NULL, "Failed to allocate exact remaining tail space");
+
+    // Verify the invariant: the tail block is now an occupied block
+    Block *tail = em_get_tail(em);
+    ASSERT_QUIET(get_is_free(tail) == false, "Tail block should be marked as occupied");
+
+    // 4. TRIGGER THE BUG: Free the preceding block.
+    // Prior to the fix, the allocator blindly assumed 'tail' was always empty space
+    // and illegally absorbed the occupied 'p2' block into 'p1', setting p1's size to 0.
+    em_free(p1);
+
+    // 5. FATALITY: Free the occupied tail block.
+    // Prior to the fix, this caused a Segfault or Assertion Failure in 'merge_blocks_logic'
+    // because p1's size was incorrectly zeroed out, breaking the physical adjacency check.
+    em_free(p2);
+
+    em_destroy(em);
+}
+
+static void test_core_scratch_garbage_leaf(void) {
+    TEST_PHASE("Core Integrity / Scratch Garbage Leaf in LLRB");
+
+    EM *em = em_create(1024 * 16); 
+    ASSERT_QUIET(em != NULL, "Failed to create EM instance");
+
+    // 1. Allocate a scratchpad to populate its union fields with 'em' and 'magic'
+    void *scratch = em_alloc_scratch(em, 4096);
+    ASSERT_QUIET(scratch != NULL, "Failed to allocate scratchpad");
+
+    // 2. Allocate Block A. We will free this later to trigger the crash.
+    // It MUST be larger than the padding slice (~960 bytes) so the LLRB insertion
+    // logic traverses into the RIGHT child (where the 0xdeadbeef magic resides).
+    void *block_a = em_alloc(em, 2048);
+    ASSERT_QUIET(block_a != NULL, "Failed to allocate block A");
+
+    // 3. Fill the remaining arena completely up to the scratchpad boundary
+    size_t remaining = free_size_in_tail(em);
+    void *filler = em_alloc(em, remaining);
+    ASSERT_QUIET(filler != NULL, "Failed to fill the arena");
+
+    // 4. Free the scratchpad. 
+    // Without the fix, it becomes an empty tail but retains its dirty union pointers.
+    em_free(scratch);
+
+    // 5. Force a massive alignment padding.
+    // The allocator slices a chunk (~960 bytes) off the dirty tail and sets it 
+    // as the ROOT of the empty LLRB tree.
+    void *aligned_ptr = em_alloc_aligned(em, 128, 1024);
+    ASSERT_QUIET(aligned_ptr != NULL, "Failed to allocate highly aligned block");
+
+    // 6. FATALITY: Free Block A (2048 bytes).
+    // The allocator tries to insert it into the LLRB tree. Since 2048 > ~960, 
+    // it traverses to the right child of the root. The right child is dirty 
+    // (0xdeadbeef...). Dereferencing it causes a Segfault.
+    em_free(block_a);
+
+    em_destroy(em);
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0); 
 
@@ -987,7 +1062,9 @@ int main(void) {
     test_invalid_scratch_allocation();
     test_scratch_em_creation_and_freeing();
     test_scratch_tail_recovery();
-    
+    test_core_tail_oom_absorption();
+    test_core_scratch_garbage_leaf();
+
     print_test_summary();
     return tests_failed > 0 ? 1 : 0;
 }

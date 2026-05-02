@@ -60,6 +60,15 @@ TEST_COV_OBJS = $(TEST_SRCS:$(TEST_DIR)/%.c=$(TEST_DIR)/%.cov.o)
 # Generate names for coverage executables
 TEST_COV_BINS = $(TEST_SRCS:$(TEST_DIR)/%.c=$(TEST_DIR)/%_coverage)
 
+# --- Fuzzing Configuration ---
+FUZZ_DIR = fuzzers
+FUZZ_SRCS = $(wildcard $(FUZZ_DIR)/*.c)
+FUZZ_BINS = $(FUZZ_SRCS:%.c=%)
+FUZZ_DEBUG_BINS = $(FUZZ_SRCS:%.c=%_debug)
+
+FUZZ_FLAGS = -fsanitize=fuzzer,address,undefined -O3 -g3 -fno-omit-frame-pointer
+FUZZ_DEBUG_FLAGS = -fsanitize=fuzzer,address,undefined -O0 -g3 -fno-omit-frame-pointer -DEM_FUZZ_DEBUG -DDEBUG
+
 # Define the primary source file to check coverage for.
 # Adjust if your implementation is in a .c file.
 COVERAGE_SRC = easy_memory.h
@@ -67,7 +76,8 @@ COVERAGE_SRC = easy_memory.h
 .PHONY: all clean run tests tests_full list coverage build_coverage
 
 # Default goal: show available commands
-all: clean list
+.DEFAULT_GOAL := list
+all: list
 
 # Compilation of each test without debug information
 $(TEST_DIR)/%_silent: $(TEST_DIR)/%.c easy_memory.h $(TEST_DIR)/test_utils.h
@@ -200,15 +210,50 @@ clean:
 	rm -f *.gcov # Clean root gcov files if any generated manually
 	rm -f $(TEST_DIR)/*.gcda $(TEST_DIR)/*.gcno # Clean coverage data files
 	rm -f coverage.info
+	rm -f $(FUZZ_BINS) $(FUZZ_DEBUG_BINS)
+
+
+# --- Fuzzing Targets ---
+$(FUZZ_DIR)/%: CC = clang
+$(FUZZ_DIR)/%_debug: CC = clang
+
+$(FUZZ_DIR)/%: $(FUZZ_DIR)/%.c easy_memory.h $(FUZZ_DIR)/fuzz_utils.h
+	@printf "Compiling fuzzer: $@\n"
+	@$(CC) $(BASE_CFLAGS) $(FUZZ_FLAGS) $< -o $@
+
+$(FUZZ_DIR)/%_debug: $(FUZZ_DIR)/%.c easy_memory.h $(FUZZ_DIR)/fuzz_utils.h
+	@printf "Compiling fuzzer replay mode: $@\n"
+	@$(CC) $(BASE_CFLAGS) $(FUZZ_DEBUG_FLAGS) $< -o $@
+
+FUZZ_TIME ?= 300
+fuzz_%: $(FUZZ_DIR)/%_fuzzer
+	@printf "\n--- Running Fuzzer: $< (Timeout: $(FUZZ_TIME)s) ---\n"
+	@./$< -max_total_time=$(FUZZ_TIME)
+
+replay_%: $(FUZZ_DIR)/%_fuzzer_debug
+	@if [ -z "$(CRASH)" ]; then \
+		printf "\nERROR: You must specify the crash file!\n"; \
+		printf "Usage: make replay_$* CRASH=crash-filename\n\n"; \
+		exit 1; \
+	fi
+	@printf "\n--- Replaying crash file: $(CRASH) on $< ---\n"
+	@./$< $(CRASH)
 
 # Show available tests
 list:
 	@printf "Available commands:\n"
-	@printf "  make tests      - run all tests without debug output \n"
-	@printf "  make tests_full - run all tests with debug output\n"
-	@printf "  make coverage   - build & run tests to generate coverage data for CodeCov\n"
+	@printf "  make tests                    - run all tests without debug output \n"
+	@printf "  make tests_full               - run all tests with debug output\n"
+	@printf "  make coverage                 - build & run tests to generate coverage data for CodeCov\n"
+	@printf "  make fuzz_[name]              - run the 'core' fuzzer for 5 minutes (auto-detects fuzz_*.c)\n"
+	@printf "  make replay_[name] CRASH=...  - replay a specific crash file with ASCII visualization\n"
 	@printf "\nAvailable individual tests (always with debug output):\n"
 	@for test in $(TEST_SRCS) ; do \
 		basename=$$(basename $${test%.c} _test); \
 		printf "  make test_$$basename\n" ; \
+	done
+	@printf "\nAvailable individual fuzzers:\n"
+	@for test in $(FUZZ_SRCS) ; do \
+		basename=$$(basename $${test%.c} _fuzzer); \
+		printf "  make fuzz_$$basename\n" ; \
 	done

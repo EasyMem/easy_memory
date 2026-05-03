@@ -2898,11 +2898,18 @@ static inline EM *create_nested_aligned_internal(EM *parent_em, size_t size, siz
     }
     // LCOV_EXCL_STOP
 
-    Block *prev = get_prev(block);
+    Block *prev_ptr = get_prev(block);
+    bool is_free_flag = get_is_free(block);
+    bool color_flag = get_color(block);
+    size_t true_physical_capacity = get_size(block);
 
-    EM *em = em_create_static_aligned((void *)block, size, alignment);
-    em_set_is_nested(em, true); // Mark the easy memory as nested
-    set_prev(block, prev);      // Restore the previous block link
+    EM *em = em_create_static_aligned((void *)block, true_physical_capacity, alignment);
+    em_set_is_nested(em, true); 
+    
+    Block *em_block = &(em->as.block_representation);
+    set_prev(em_block, prev_ptr);
+    set_is_free(em_block, is_free_flag);
+    set_color(em_block, color_flag);
 
     return em;
 }
@@ -2923,7 +2930,18 @@ static inline Bump *bump_create_internal(EM *EM_RESTRICT parent_em, size_t size,
     void *data = allocator(parent_em, size);  // Allocate memory from the parent easy memory
     if (!data) return NULL;
 
-    Block *block = (Block *)(void *)((char *)data - sizeof(Block));
+    Block *block = NULL;
+    uintptr_t *spot_before_user_data = (uintptr_t *)(void *)((char *)data - sizeof(uintptr_t));
+    uintptr_t check = *spot_before_user_data ^ (uintptr_t)data;
+    if (check == (uintptr_t)EM_MAGIC) {
+        block = (Block *)(void *)((char *)data - sizeof(Block));
+    }
+    // LCOV_EXCL_START
+    else {
+        block = (Block *)check;
+    }
+    // LCOV_EXCL_STOP
+
     Bump *bump = (Bump *)((void *)block);  // just cast allocated Block to Bump
 
     bump_set_em(bump, parent_em);
@@ -2961,14 +2979,26 @@ static inline Slab *slab_create_internal(EM *EM_RESTRICT parent_em, size_t slab_
     void *data = allocator(parent_em, slab_size);
     if (!data) return NULL;
 
-    Slab *slab = (Slab *)(void *)((char *)data - sizeof(Slab));
+    Block *block = NULL;
+    uintptr_t *spot_before_user_data = (uintptr_t *)(void *)((char *)data - sizeof(uintptr_t));
+    uintptr_t check = *spot_before_user_data ^ (uintptr_t)data;
+    if (check == (uintptr_t)EM_MAGIC) {
+        block = (Block *)(void *)((char *)data - sizeof(Block));
+    }
+    // LCOV_EXCL_START
+    else {
+        block = (Block *)check;
+    }
+    // LCOV_EXCL_STOP
+
+    Slab *slab = (Slab *)((void *)block);
 
     slab->as.self.em = parent_em;
 
     slab_set_chunk_size(slab, chunk_size);
     slab_set_index(slab, 1);
 
-    uintptr_t *first_chunk = (uintptr_t *)data;
+    uintptr_t *first_chunk = (uintptr_t *)(void *)((char *)slab + sizeof(Slab));
     *first_chunk = 1;
 
     return slab;
@@ -4167,6 +4197,10 @@ EMDEF void em_bump_trim(Bump *EM_RESTRICT bump) {
 
     size_t new_payload_size = remainder_addr - ((uintptr_t)bump + sizeof(Block));
 
+    if (new_payload_size < EM_MIN_BUFFER_SIZE) {
+        new_payload_size = EM_MIN_BUFFER_SIZE;
+    }
+
     if (bump_get_capacity(bump) > new_payload_size) 
         split_block(parent, (Block*)bump, new_payload_size);
 }
@@ -4555,6 +4589,8 @@ EMDEF void em_slab_reset_zero(Slab *EM_RESTRICT slab) {
  */
 EMDEF void em_slab_destroy(Slab *slab) {
     EM_CHECK_V((slab != NULL), "Internal Error: 'em_slab_destroy' called on NULL slab");
+
+    set_reserved_bits(&(slab->as.block_representation), 0);
 
     em_free_block_full(slab->as.self.em, (Block *)slab);
 }

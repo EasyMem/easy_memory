@@ -29,6 +29,11 @@ static inline size_t fuzz_read_size(const uint8_t *data, size_t *offset, size_t 
     return val;
 }
 
+static inline uint8_t fuzz_read_byte(const uint8_t *data, size_t *offset, size_t max_size) {
+    if (*offset >= max_size) return 0;
+    return data[(*offset)++];
+}
+
 static inline size_t fuzz_read_align(const uint8_t *data, size_t *offset, size_t max_size) {
     if (*offset >= max_size) return 16;
     size_t align_shift = (size_t)(data[(*offset)++] % 7) + 4;

@@ -1042,6 +1042,62 @@ static void test_core_scratch_garbage_leaf(void) {
     em_destroy(em);
 }
 
+static void test_core_nested_padding_and_bump_trim(void) {
+    TEST_PHASE("Core Integrity / Nested Padding and Empty Bump Trim");
+
+    // Initialize Root EM
+    EM *root = em_create(1024 * 1024 * 2);
+    ASSERT_QUIET(root != NULL, "Failed to create root EM");
+
+    // 1. Create a scratchpad Slab allocator
+    Slab *sub3 = em_slab_create_scratch(root, 47545, 32); 
+    ASSERT_QUIET(sub3 != NULL, "Failed to create scratch Slab");
+    
+    // 2. Create a standard Bump allocator
+    Bump *sub0 = em_bump_create(root, 32512);
+    ASSERT_QUIET(sub0 != NULL, "Failed to create Bump sub0");
+
+    // 3. Create a Nested EM
+    EM *sub2 = em_create_nested(root, 29758);
+    ASSERT_QUIET(sub2 != NULL, "Failed to create Nested EM sub2");
+
+    // 4. Destroy the first Bump allocator to create a memory gap in the middle of the heap
+    em_bump_destroy(sub0);
+
+    // 5. Allocate from the scratchpad Slab
+    void *slab_ptr = em_slab_alloc(sub3);
+    ASSERT_QUIET(slab_ptr != NULL, "Failed to allocate from Slab");
+
+    // 6. ALLOCATION SHIFT: Allocate an odd size from the root to misalign the 16-byte grid.
+    // 4018 is divisible by 8 (EMMIN_ALIGNMENT) but NOT by 16 (EM_DEFAULT_ALIGNMENT).
+    // This forces the next sub-allocator to inject 8 bytes of padding to align its payload.
+    void *root_ptr = em_alloc(root, 4018);
+    ASSERT_QUIET(root_ptr != NULL, "Failed to allocate odd size from root");
+
+    // 7. Destroy the scratchpad Slab
+    em_slab_destroy(sub3);
+    
+    // 8. Create a new Bump allocator. 
+    // Because of the previous odd-sized allocation, this allocation has 8 bytes of alignment padding.
+    // Without the XOR-magic fix in bump_create_internal, this would calculate the wrong header
+    // address and corrupt the metadata.
+    Bump *sub1 = em_bump_create(root, 9216);
+    ASSERT_QUIET(sub1 != NULL, "Failed to create Bump sub1 with padding");
+
+    // 9. Create another Bump allocator to lock the previous one in place physically
+    Bump *sub0_new = em_bump_create(root, 25440);
+    ASSERT_QUIET(sub0_new != NULL, "Failed to create Bump sub0_new");
+
+    // 10. TRIGGER THE BUGS: Trim the padded Bump allocator that has 0 internal allocations.
+    // Prior to fixes, this triggered two fatal issues:
+    // a) It read garbage offset data (due to the missing padding check) causing a massive heap buffer overflow.
+    // b) The calculated new_payload_size was 0, which illegally converted an active block into a size-0 tail block.
+    em_bump_trim(sub1);
+
+    // Cleanup
+    em_destroy(root);
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0); 
 
@@ -1064,6 +1120,7 @@ int main(void) {
     test_scratch_tail_recovery();
     test_core_tail_oom_absorption();
     test_core_scratch_garbage_leaf();
+    test_core_nested_padding_and_bump_trim();
 
     print_test_summary();
     return tests_failed > 0 ? 1 : 0;

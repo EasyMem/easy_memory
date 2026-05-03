@@ -61,6 +61,7 @@
 *   **Extreme Portability:** Verified across a wide range of compilers, operating systems, hardware architectures, and endianness types. (See *Verified Platforms* below).
 *   **Full C++ Compatibility:** Wrapped in `extern "C"` for seamless integration into C++ projects.
 *   **Excellent Developer Experience:**
+    *   **Fuzzing & Replay:** Built-in Makefile targets to run specialized fuzzers and instantly replay crash files (`make replay_[name] CRASH=...`) with a step-by-step ASCII visualization of the heap state.
     *   **Intuitive API:** Consistent `em_*` naming convention.
     *   **Source-Agnostic:** A single set of functions works on static, dynamic, and nested memory.
     *   **Self-Documenting:** The codebase features encyclopedic comments explaining the *physics* and *rationale* behind every architectural decision.
@@ -69,7 +70,7 @@
 ## Rigorous Validation
 
 The system is subjected to exhaustive verification across diverse environments and configurations:
-
+*   **Continuous Fuzzing Fleet:** The core and all sub-allocators are battle-tested against a dedicated fleet of `libFuzzer` targets (`core`, `bump`, `slab`, `chaos`). Capable of executing millions of highly concurrent, chaotic nested allocations per second. Verified to withstand extreme heap fragmentation, unpredictable alignment padding, and deep OOM states without a single crash or leak.
 *   **Sanitizer Suite:** Verified with **ASan** (Address), **UBSan** (Undefined Behavior), and **LSan** (Leak) across multiple architectures to ensure memory integrity and zero leaks.
 *   **Valgrind Memcheck:** **0 errors from 0 contexts**. Clean diagnostic logs ensure that library internals do not interfere with application-level debugging.
 *   **Multi-Policy Verification:** Every architecture is independently tested using both `EM_POLICY_CONTRACT` (logic-only) and `EM_POLICY_DEFENSIVE` (runtime-checked) modes to guarantee consistent behavior regardless of safety settings.

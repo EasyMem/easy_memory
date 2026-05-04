@@ -9,6 +9,7 @@ RUN apt-get update && \
     gcc \
     make \
     valgrind \
+    lcov \
     git \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*

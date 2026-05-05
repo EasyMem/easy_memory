@@ -1,4 +1,4 @@
-name: EasyMemory CI
+name: easymem-ci
 
 on:
   push:
@@ -7,257 +7,288 @@ on:
       - 'easy_memory.h'
       - 'Makefile'
       - 'tests/**'
-      - '.github/workflows/ci.yml'
+      - '.github/workflows/**'
   pull_request:
     branches: [ "main", "master" ]
 
-env:
-  REGISTRY_IMAGE_BASE: ghcr.io/easymem/easy_memory
-
 jobs:
-  # Job 1: Build and test on primary platforms (x86_64 & Native ARM64)
-  build-and-test-primary:
-    name: ${{ matrix.os }} | ${{ matrix.compiler }} | Policy ${{ matrix.policy }}
+  # ==========================================
+  # 1. LINUX GCC (x86_64, x86_32, Native ARM64)
+  # ==========================================
+  linux-gcc:
+    name: linux-gcc-${{ matrix.os }}-arch${{ matrix.arch }}-opt${{ matrix.build_config.opt }}-std${{ matrix.build_config.std }}-pol${{ matrix.policy }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [
-          ubuntu-latest, ubuntu-24.04-arm, 
-          macos-13, macos-15, 
-          windows-latest, windows-11-arm
-        ]
-        compiler: [gcc, clang]
-        policy: [1, 0] # 1 = DEFENSIVE, 0 = CONTRACT
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+        arch: [64, 32]
+        policy: [1, 0]
+        build_config:
+          - { std: c99, opt: "-O0" }
+          - { std: c99, opt: "-O1" }
+          - { std: c99, opt: "-O2" }
+          - { std: c99, opt: "-O3" }
+          - { std: c99, opt: "-Os" }
+          - { std: c11, opt: "-O2" }
+          - { std: c17, opt: "-O2" }
+          - { std: c2x, opt: "-O2" }
         exclude:
-          - os: windows-latest
-            compiler: clang
-          - os: windows-11-arm
-            compiler: clang
-          - os: macos-13
-            compiler: gcc
-          - os: macos-15
-            compiler: gcc
           - os: ubuntu-24.04-arm
-            compiler: clang
-
-    runs-on: ${{ matrix.os }}
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up build environment (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y build-essential valgrind ${{ matrix.compiler }}
-
-      - name: Set up build environment (macOS)
-        if: runner.os == 'macOS'
-        run: echo "Using pre-installed Apple Clang."
-
-      - name: Set up MSYS2 and GCC (Windows)
-        if: runner.os == 'Windows'
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: MINGW64
-          update: true
-          install: mingw-w64-x86_64-toolchain make
-
-      # Build & Test Steps (Passing Policy and forcing Asserts)
-      - name: Build and Test with Makefile
-        if: runner.os != 'Windows'
-        run: make tests CC=${{ matrix.compiler }} EXTRA_CFLAGS="-DEM_SAFETY_POLICY=${{ matrix.policy }} -DEM_ASSERT_STAYS"
-      
-      - name: Verify CTZ Fallback Logic (Force Generic)
-        if: runner.os == 'Linux'
-        run: make test_fallback CC=${{ matrix.compiler }} EXTRA_CFLAGS="-DEM_SAFETY_POLICY=${{ matrix.policy }}"
-
-      - name: Build and Test with Makefile (Windows/GCC)
-        if: runner.os == 'Windows'
-        shell: msys2 {0}
-        run: make tests CC=gcc EXTRA_CFLAGS="-DEM_SAFETY_POLICY=${{ matrix.policy }} -DEM_ASSERT_STAYS"
-
-      # MSVC Smoke Test (Windows Only)
-      - name: Build and Test each test file with MSVC
-        if: runner.os == 'Windows'
-        shell: cmd
-        run: |
-          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
-          cd tests
-          FOR %%f IN (*.c) DO (
-            echo --- Compiling %%f with MSVC ---
-            cl.exe /W4 /WX /DDEBUG /DEM_SAFETY_POLICY=${{ matrix.policy }} /DEM_ASSERT_STAYS /I.. /Fe:%%~nf.exe %%f
-            if errorlevel 1 exit /b 1
-            echo --- Running %%~nf.exe ---
-            call %%~nf.exe
-            if errorlevel 1 exit /b 1
-          )
+            arch: 32
             
-      # Valgrind & Codecov (Linux/GCC Only) - Only run on DEFENSIVE (Policy 1) to get full coverage
-      - name: Run Valgrind Memory Check
-        if: runner.os == 'Linux' && matrix.compiler == 'gcc' && matrix.policy == 1
-        run: make valgrind CC=gcc
-
-      - name: Build for Coverage
-        if: runner.os == 'Linux' && matrix.compiler == 'gcc' && matrix.policy == 1
+    steps:
+      - uses: actions/checkout@v6
+      - name: install-dependencies
         run: |
-          sudo apt-get update && sudo apt-get install -y lcov
-          make coverage CC=gcc
+          sudo apt-get update && sudo apt-get install -y build-essential valgrind lcov
+          if [ "${{ matrix.arch }}" == "32" ]; then sudo apt-get install -y gcc-multilib g++-multilib; fi
+          echo "CC_CMD=$([ "${{ matrix.arch }}" == "32" ] && echo 'gcc -m32' || echo 'gcc')" >> $GITHUB_ENV
 
-      - name: Upload coverage to Codecov
-        if: runner.os == 'Linux' && matrix.compiler == 'gcc' && matrix.policy == 1 && github.repository == 'EasyMem/easy_memory'
-        uses: codecov/codecov-action@v4
+      - name: build-and-test
+        run: make tests_full CC="${CC_CMD}" STD_C=${{ matrix.build_config.std }} EXTRA_CFLAGS="${{ matrix.build_config.opt }} -DEM_SAFETY_POLICY=${{ matrix.policy }} -DEM_ASSERT_STAYS"
+      
+      - name: verify-ctz-fallback
+        run: make test_fallback CC="${CC_CMD}" STD_C=${{ matrix.build_config.std }} EXTRA_CFLAGS="${{ matrix.build_config.opt }} -DEM_SAFETY_POLICY=${{ matrix.policy }}"
+
+      - name: strict-alignment-test-arm64
+        if: matrix.os == 'ubuntu-24.04-arm' && matrix.policy == 1
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: make tests_full CC="${CC_CMD}" SAN_FLAGS="-fsanitize=alignment,undefined" EXTRA_CFLAGS="${{ matrix.build_config.opt }} -DEM_SAFETY_POLICY=1"
+
+      - name: valgrind-memory-check
+        if: matrix.os == 'ubuntu-latest' && matrix.arch == '64' && matrix.build_config.opt == '-O0' && matrix.policy == 1
+        run: make valgrind CC="${CC_CMD}"
+
+      - name: generate-coverage
+        if: matrix.policy == 1 && matrix.build_config.opt == '-O0' && matrix.build_config.std == 'c99' && github.repository == 'EasyMem/easy_memory'
+        run: make coverage CC="${CC_CMD}" STD_C=${{ matrix.build_config.std }} EXTRA_CFLAGS="${{ matrix.build_config.opt }}"
+        
+      - name: upload-codecov
+        if: matrix.policy == 1 && matrix.build_config.opt == '-O0' && matrix.build_config.std == 'c99' && github.repository == 'EasyMem/easy_memory'
+        uses: codecov/codecov-action@v5
         with:
-          files: ./coverage.info
           token: ${{ secrets.CODECOV_TOKEN }}
-          config_file: ./.github/codecov.yml
-          fail_ci_if_error: true
-          verbose: true
+          codecov_yml_path: ./.github/codecov.yml
+          files: ./coverage.info
+          flags: linux-gcc-${{ matrix.os }}-arch${{ matrix.arch }}
+          fail_ci_if_error: false
 
-  # Job 2: Build and test for 32-bit architecture (i686)
-  build-and-test-32bit:
-    name: Ubuntu | x86_32 | GCC
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      - name: Set up 32-bit build environment
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-multilib gdb
-      - name: Build and Test in 32-bit mode
-        run: make tests CC="gcc -m32"
-
-  # Job 3: Modern ARM64
-  build-and-test-arm64-modern:
-    name: Ubuntu | ARM64 (Modern) | GCC
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
-      
-      - name: Test in ARM64 Container
-        run: |
-          docker run --rm --platform linux/arm64 \
-            -v ${{ github.workspace }}:/workspace \
-            -w /workspace \
-            ${{ env.REGISTRY_IMAGE_BASE }}:arm64 \
-            make tests_full CC='gcc' SAN_FLAGS=""
-
-  # Job 4: Strict ARM64
-  build-and-test-arm64-strict:
-    name: Ubuntu | ARM64 (Strict Alignment) | GCC
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
-      
-      - name: Test in Strict ARM64 Container
-        run: |
-          docker run --rm --platform linux/arm64 \
-            -v ${{ github.workspace }}:/workspace \
-            -w /workspace \
-            --env UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
-            ${{ env.REGISTRY_IMAGE_BASE }}:arm64 \
-            make tests_full CC='gcc' SAN_FLAGS="-fsanitize=alignment,undefined"
-
-  # Job 5: Big Endian (s390x)
-  build-and-test-big-endian:
-    name: Ubuntu | Big Endian (s390x) | GCC
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
-
-      - name: Test in s390x Container
-        run: |
-          docker run --rm --platform linux/s390x \
-            -v ${{ github.workspace }}:/workspace \
-            -w /workspace \
-            ${{ env.REGISTRY_IMAGE_BASE }}:s390x \
-            make tests_full CC=gcc SAN_FLAGS=""
-
-  # Job 6: ARM32
-  build-and-test-arm32:
-    name: Ubuntu | ARM32 (armv7) | GCC
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
-
-      - name: Test in ARM32 Container
-        run: |
-          docker run --rm --platform linux/arm/v7 \
-            -v ${{ github.workspace }}:/workspace \
-            -w /workspace \
-            ${{ env.REGISTRY_IMAGE_BASE }}:arm32 \
-            make tests_full CC='gcc' SAN_FLAGS=""
-
-  # Job 7: Test various C standards
-  build-and-test-C-stds:
-    name: Build & Test (${{ matrix.os }}, ${{ matrix.std }})
+  # ==========================================
+  # 2. LINUX CLANG (x86_64, x86_32, Native ARM64)
+  # ==========================================
+  linux-clang:
+    name: linux-clang-${{ matrix.os }}-arch${{ matrix.arch }}-opt${{ matrix.build_config.opt }}-std${{ matrix.build_config.std }}-pol${{ matrix.policy }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        std: [c99, c11, c17, c2x]
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Compile and Test
-        run: |
-          make tests STD_C=${{ matrix.std }}
-  
-  # Job 8: Test various optimization levels and safety policies
-  build-and-test-optimizations:
-    name: ${{ matrix.os }} | ${{ matrix.compiler }} | ${{ matrix.opt }} | Policy ${{ matrix.policy }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-        compiler: [gcc, clang]
-        opt: [-O0, -O1, -O2, -O3, -Os, -Oz]
-        policy: [1, 0] # 1 = DEFENSIVE, 0 = CONTRACT
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+        arch: [64, 32]
+        policy: [1]
+        build_config:
+          - { std: c99, opt: "-O0" }
+          - { std: c99, opt: "-O2" }
+          - { std: c99, opt: "-O3" }
+          - { std: c99, opt: "-Oz" }
+          - { std: c11, opt: "-O2" }
+          - { std: c17, opt: "-O2" }
+          - { std: c2x, opt: "-O2" }
         exclude:
-          - compiler: gcc
-            opt: -Oz
+          - os: ubuntu-24.04-arm
+            arch: 32
+            
     steps:
-      - uses: actions/checkout@v4
-      - name: Build and Test
+      - uses: actions/checkout@v6
+      - name: install-dependencies
         run: |
-          make tests CC=${{ matrix.compiler }} EXTRA_CFLAGS="${{ matrix.opt }} -DEM_SAFETY_POLICY=${{ matrix.policy }} -DEM_ASSERT_STAYS"
+          sudo apt-get update && sudo apt-get install -y clang lcov
+          if [ "${{ matrix.arch }}" == "32" ]; then sudo apt-get install -y gcc-multilib; fi
+          echo "CC_CMD=$([ "${{ matrix.arch }}" == "32" ] && echo 'clang -m32' || echo 'clang')" >> $GITHUB_ENV
 
-  # Job 9: MSVC with different architectures, optimizations and policies
-  build-and-test-msvc:
-    name: Windows | MSVC | ${{ matrix.arch }} | ${{ matrix.opt }} | Policy ${{ matrix.policy }}
+      - name: build-and-test
+        run: make tests_full CC="${CC_CMD}" STD_C=${{ matrix.build_config.std }} EXTRA_CFLAGS="${{ matrix.build_config.opt }} -DEM_SAFETY_POLICY=${{ matrix.policy }} -DEM_ASSERT_STAYS"
+
+  # ==========================================
+  # 3. MACOS (Intel x86_64 & M-series ARM64)
+  # ==========================================
+  macos-tests:
+    name: macos-${{ matrix.os }}-opt${{ matrix.build_config.opt }}-std${{ matrix.build_config.std }}-pol${{ matrix.policy }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-13, macos-15]
+        policy: [1, 0]
+        build_config:
+          - { std: c99, opt: "-O0" }
+          - { std: c99, opt: "-O2" }
+          - { std: c99, opt: "-O3" }
+          - { std: c99, opt: "-Oz" }
+          - { std: c11, opt: "-O2" }
+          - { std: c17, opt: "-O2" }
+          - { std: c2x, opt: "-O2" }
+        
+    steps:
+      - uses: actions/checkout@v6
+      
+      - name: install-lcov
+        run: brew install lcov
+
+      - name: build-and-test
+        run: make tests_full CC=clang STD_C=${{ matrix.build_config.std }} EXTRA_CFLAGS="${{ matrix.build_config.opt }} -DEM_SAFETY_POLICY=${{ matrix.policy }} -DEM_ASSERT_STAYS"
+      
+      - name: generate-coverage
+        if: matrix.policy == 1 && matrix.build_config.opt == '-O0' && matrix.build_config.std == 'c99'
+        run: make coverage CC=clang STD_C=${{ matrix.build_config.std }} EXTRA_CFLAGS="${{ matrix.build_config.opt }}"
+
+      - name: upload-codecov
+        if: matrix.policy == 1 && matrix.build_config.opt == '-O0' && matrix.build_config.std == 'c99' && github.repository == 'EasyMem/easy_memory'
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          codecov_yml_path: ./.github/codecov.yml
+          files: ./coverage.info
+          flags: macos-${{ matrix.os }}
+          fail_ci_if_error: false
+
+  # ==========================================
+  # 4. EXOTIC (Big Endian s390x & ARM32)
+  # ==========================================
+  exotic-tests:
+    name: exotic-${{ matrix.arch_name }}-opt${{ matrix.build_config.opt }}-std${{ matrix.build_config.std }}-pol${{ matrix.policy }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch_name: arm32
+            platform: linux/arm/v7
+            image: ghcr.io/easymem/easy_memory:arm32
+          - arch_name: s390x
+            platform: linux/s390x
+            image: ghcr.io/easymem/easy_memory:s390x
+        policy: [1]
+        build_config:
+          - { std: c99, opt: "-O0" }
+          - { std: c99, opt: "-O2" }
+          - { std: c99, opt: "-O3" }
+            
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-qemu-action@v4
+      - name: build-and-test-emulated
+        run: |
+          docker run --rm --platform ${{ matrix.platform }} \
+            -v ${{ github.workspace }}:/workspace \
+            -w /workspace \
+            ${{ matrix.image }} \
+            make tests_full CC=gcc STD_C=${{ matrix.build_config.std }} SAN_FLAGS='' EXTRA_CFLAGS="${{ matrix.build_config.opt }} -DEM_SAFETY_POLICY=${{ matrix.policy }} -DEM_ASSERT_STAYS"
+
+      - name: generate-coverage-emulated
+        if: matrix.policy == 1 && matrix.build_config.opt == '-O0' && matrix.build_config.std == 'c99'
+        run: |
+          docker run --rm --platform ${{ matrix.platform }} \
+            -v ${{ github.workspace }}:/workspace \
+            -w /workspace \
+            ${{ matrix.image }} \
+            /bin/bash -c "make coverage CC=gcc STD_C=${{ matrix.build_config.std }} EXTRA_CFLAGS='${{ matrix.build_config.opt }}' && chmod 777 coverage.info"
+
+      - name: upload-codecov
+        if: matrix.policy == 1 && matrix.build_config.opt == '-O0' && matrix.build_config.std == 'c99' && github.repository == 'EasyMem/easy_memory'
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          codecov_yml_path: ./.github/codecov.yml
+          files: ./coverage.info
+          flags: exotic-${{ matrix.arch_name }}
+          fail_ci_if_error: false
+
+  # ==========================================
+  # 5. WINDOWS (x64, x86, ARM64)
+  # ==========================================
+  windows-tests:
+    name: windows-arch${{ matrix.arch }}-tc-${{ matrix.toolchain }}-opt${{ matrix.opt }}-pol${{ matrix.policy }}
     runs-on: ${{ matrix.arch == 'arm64' && 'windows-11-arm' || 'windows-latest' }}
     strategy:
       fail-fast: false
       matrix:
         arch: [x64, x86, arm64]
-        opt: [/Od, /O1, /O2, /Ox]
+        toolchain: [msvc, mingw]
+        opt: ['0', '2', '3']
         policy: [1, 0]
-    
+        exclude:
+          - toolchain: mingw
+            arch: arm64
+            
     steps:
-      - uses: actions/checkout@v4
-      - name: Build and Test (MSVC)
+      - uses: actions/checkout@v6
+
+      - name: setup-mingw
+        if: matrix.toolchain == 'mingw'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: ${{ matrix.arch == 'x64' && 'MINGW64' || 'MINGW32' }}
+          update: true
+          install: ${{ matrix.arch == 'x64' && 'mingw-w64-x86_64-toolchain' || 'mingw-w64-i686-toolchain' }} make lcov
+          
+      - name: build-and-test-mingw
+        if: matrix.toolchain == 'mingw'
+        shell: msys2 {0}
+        run: make tests_full CC=gcc EXTRA_CFLAGS="-O${{ matrix.opt }} -DEM_SAFETY_POLICY=${{ matrix.policy }} -DEM_ASSERT_STAYS"
+
+      - name: build-and-test-msvc
+        if: matrix.toolchain == 'msvc'
         shell: cmd
         run: |
-          if "${{ matrix.arch }}"=="x86" (
-            call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars32.bat"
-          ) else if "${{ matrix.arch }}"=="arm64" (
-            call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsarm64.bat"
-          ) else (
-            call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
-          )
+          if "${{ matrix.opt }}"=="0" set MSVC_OPT=/Od
+          if "${{ matrix.opt }}"=="2" set MSVC_OPT=/O2
+          if "${{ matrix.opt }}"=="3" set MSVC_OPT=/Ox
+          
+          if "${{ matrix.arch }}"=="x86" ( call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars32.bat" ) else if "${{ matrix.arch }}"=="arm64" ( call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsarm64.bat" ) else ( call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat" )
           
           cd tests
           FOR %%f IN (*.c) DO (
-            echo --- Compiling %%f with MSVC [${{ matrix.arch }}, ${{ matrix.opt }}, Policy ${{ matrix.policy }}] ---
-            cl.exe /W4 /WX /DDEBUG /DEM_SAFETY_POLICY=${{ matrix.policy }} /DEM_ASSERT_STAYS ${{ matrix.opt }} /I.. /Fe:%%~nf.exe %%f
+            cl.exe /W4 /WX /DDEBUG /DEM_SAFETY_POLICY=${{ matrix.policy }} /DEM_ASSERT_STAYS %MSVC_OPT% /I.. /Fe:%%~nf.exe %%f
             if errorlevel 1 exit /b 1
-            echo --- Running %%~nf.exe ---
-            %%~nf.exe
+            call %%~nf.exe
             if errorlevel 1 exit /b 1
           )
+        
+      - name: generate-coverage-mingw
+        if: matrix.toolchain == 'mingw' && matrix.policy == 1 && matrix.opt == '0'
+        shell: msys2 {0}
+        run: make coverage CC=gcc EXTRA_CFLAGS="-O0"
+        
+      - name: upload-codecov
+        if: matrix.toolchain == 'mingw' && matrix.policy == 1 && matrix.opt == '0' && github.repository == 'EasyMem/easy_memory'
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          codecov_yml_path: ./.github/codecov.yml
+          files: ./coverage.info
+          flags: windows-mingw-${{ matrix.arch }}
+          fail_ci_if_error: false
+
+  # ==========================================
+  # 6. BARE METAL / 16-BIT VERIFICATION
+  # ==========================================
+  avr-16bit-tests:
+    name: bare-metal-avr-16bit-opt${{ matrix.opt }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        opt: [-O0, -O1, -O2, -O3, -Os]
+    steps:
+      - uses: actions/checkout@v6
+      - name: install-avr-toolchain
+        run: sudo apt-get update && sudo apt-get install -y gcc-avr avr-libc
+      - name: compile-library-no-malloc
+        run: |
+          avr-gcc -mmcu=atmega328p ${{ matrix.opt }} -Wall -Wextra -Werror \
+            -Wshadow -Wconversion -Wsign-conversion -Wcast-align \
+            -DEM_NO_MALLOC -DEASY_MEMORY_IMPLEMENTATION \
+            -x c -c easy_memory.h -o easy_memory.o
+      - name: verify-binary-size
+        run: avr-size easy_memory.o

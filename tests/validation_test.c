@@ -543,11 +543,10 @@ static void test_em_reset_zero(void) {
 // --- Alignment Abstraction Layer ---
 #define TEST_BASE_ALIGNMENT 4096
 
-#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L && !defined(__STDC_NO_ATOMICS__)
-    // C11 Standard
-    #include <stdalign.h>
-    #define ALIGN_PREFIX(N) alignas(N)
-    #define ALIGN_SUFFIX(N)
+#if defined(__GNUC__) || defined(__clang__)
+    // GCC / Clang (Extension)
+    #define ALIGN_PREFIX(N)
+    #define ALIGN_SUFFIX(N) __attribute__((aligned(N)))
     #define HAS_NATIVE_ALIGN 1
 
 #elif defined(_MSC_VER)
@@ -556,10 +555,11 @@ static void test_em_reset_zero(void) {
     #define ALIGN_SUFFIX(N)
     #define HAS_NATIVE_ALIGN 1
 
-#elif defined(__GNUC__) || defined(__clang__)
-    // GCC / Clang (Extension)
-    #define ALIGN_PREFIX(N)
-    #define ALIGN_SUFFIX(N) __attribute__((aligned(N)))
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L && !defined(__STDC_NO_ATOMICS__)
+    // C11 Standard
+    #include <stdalign.h>
+    #define ALIGN_PREFIX(N) alignas(N)
+    #define ALIGN_SUFFIX(N)
     #define HAS_NATIVE_ALIGN 1
 
 #else

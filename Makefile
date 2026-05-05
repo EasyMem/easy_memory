@@ -46,8 +46,8 @@ BASE_CFLAGS = -Werror -Wall -Wextra \
 		 -I.
 CFLAGS = $(BASE_CFLAGS) $(EXTRA_CFLAGS)
 DEBUG_FLAGS = -DDEBUG # Debug flag
-COV_FLAGS = -O0 -fprofile-arcs -ftest-coverage # Coverage flags
-LDFLAGS_COV = -lgcov # Linker flag for coverage
+COV_FLAGS = -O0 -fprofile-arcs -ftest-coverage --coverage # Coverage flags
+LDFLAGS_COV = --coverage # Linker flag for coverage
 
 export UBSAN_OPTIONS=halt_on_error=0:exitcode=1:print_stacktrace=1
 export ASAN_OPTIONS=$(ASAN_OPTS)

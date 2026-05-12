@@ -19,57 +19,48 @@ jobs:
   # 1. LINUX GCC (x86_64, x86_32, Native ARM64)
   # ==========================================
   linux-gcc:
-    name: linux-gcc-${{ matrix.os }}-arch${{ matrix.arch }}-opt${{ matrix.build_config.opt }}-std${{ matrix.build_config.std }}-pol${{ matrix.policy }}
+    name: linux-gcc-${{ matrix.os }}-arch${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm]
         arch: [64, 32]
-        policy: [1, 0]
-        build_config:
-          - { std: c99, opt: "-O0" }
-          - { std: c99, opt: "-O1" }
-          - { std: c99, opt: "-O2" }
-          - { std: c99, opt: "-O3" }
-          - { std: c99, opt: "-Os" }
-          - { std: c11, opt: "-O2" }
-          - { std: c17, opt: "-O2" }
-          - { std: c2x, opt: "-O2" }
         exclude:
           - os: ubuntu-24.04-arm
             arch: 32
             
     steps:
       - uses: actions/checkout@v6
+      
       - name: install-dependencies
         run: |
           sudo apt-get update && sudo apt-get install -y build-essential valgrind lcov
           if [ "${{ matrix.arch }}" == "32" ]; then sudo apt-get install -y gcc-multilib g++-multilib; fi
           echo "CC_CMD=$([ "${{ matrix.arch }}" == "32" ] && echo 'gcc -m32' || echo 'gcc')" >> $GITHUB_ENV
 
-      - name: build-and-test
-        run: make tests_full CC="${CC_CMD}" STD_C=${{ matrix.build_config.std }} EXTRA_CFLAGS="${{ matrix.build_config.opt }} -DEM_SAFETY_POLICY=${{ matrix.policy }} -DEM_ASSERT_STAYS"
+      - name: run-matrix-tests
+        run: make test_matrix CC="${CC_CMD}" MATRIX_OPTS="O0 O1 O2 O3 Os" -j$(nproc) -Otarget
       
       - name: verify-ctz-fallback
-        run: make test_fallback CC="${CC_CMD}" STD_C=${{ matrix.build_config.std }} EXTRA_CFLAGS="${{ matrix.build_config.opt }} -DEM_SAFETY_POLICY=${{ matrix.policy }}"
+        run: make test_fallback CC="${CC_CMD}" EXTRA_CFLAGS="-O2 -DEM_SAFETY_POLICY=1"
 
       - name: strict-alignment-test-arm64
-        if: matrix.os == 'ubuntu-24.04-arm' && matrix.policy == 1
+        if: matrix.os == 'ubuntu-24.04-arm'
         env:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
-        run: make tests_full CC="${CC_CMD}" SAN_FLAGS="-fsanitize=alignment,undefined" EXTRA_CFLAGS="${{ matrix.build_config.opt }} -DEM_SAFETY_POLICY=1"
+        run: make tests_full CC="${CC_CMD}" SAN_FLAGS="-fsanitize=alignment,undefined" EXTRA_CFLAGS="-O2 -DEM_SAFETY_POLICY=1"
 
       - name: valgrind-memory-check
-        if: matrix.os == 'ubuntu-latest' && matrix.arch == '64' && matrix.build_config.opt == '-O0' && matrix.policy == 1
-        run: make valgrind CC="${CC_CMD}"
+        if: matrix.os == 'ubuntu-latest' && matrix.arch == '64'
+        run: make valgrind CC="${CC_CMD}" EXTRA_CFLAGS="-O0 -DEM_SAFETY_POLICY=1"
 
       - name: generate-coverage
-        if: matrix.policy == 1 && matrix.build_config.opt == '-O0' && matrix.build_config.std == 'c99' && github.repository == 'EasyMem/easy_memory'
-        run: make coverage CC="${CC_CMD}" STD_C=${{ matrix.build_config.std }} EXTRA_CFLAGS="${{ matrix.build_config.opt }}"
+        if: github.repository == 'EasyMem/easy_memory'
+        run: make coverage CC="${CC_CMD}" STD_C=c99 EXTRA_CFLAGS="-O0 -DEM_SAFETY_POLICY=1"
         
       - name: upload-codecov
-        if: matrix.policy == 1 && matrix.build_config.opt == '-O0' && matrix.build_config.std == 'c99' && github.repository == 'EasyMem/easy_memory'
+        if: github.repository == 'EasyMem/easy_memory'
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}

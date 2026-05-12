@@ -59,6 +59,8 @@ tests/bump_alloc_test_*
 tests/em_nested_test_*
 tests/slab_alloc_test_*
 
+build_matrix
+
 # Fuzzers
 fuzzers/*_fuzzer
 

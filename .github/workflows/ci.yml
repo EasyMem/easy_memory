@@ -117,21 +117,12 @@ jobs:
   # 3. MACOS (Intel x86_64 & M-series ARM64)
   # ==========================================
   macos-tests:
-    name: macos-${{ matrix.os }}-opt${{ matrix.build_config.opt }}-std${{ matrix.build_config.std }}-pol${{ matrix.policy }}
+    name: macos-${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [macos-15-intel, macos-latest]
-        policy: [1, 0]
-        build_config:
-          - { std: c99, opt: "-O0" }
-          - { std: c99, opt: "-O2" }
-          - { std: c99, opt: "-O3" }
-          - { std: c99, opt: "-Oz" }
-          - { std: c11, opt: "-O2" }
-          - { std: c17, opt: "-O2" }
-          - { std: c2x, opt: "-O2" }
         
     steps:
       - uses: actions/checkout@v6
@@ -142,15 +133,14 @@ jobs:
           HOMEBREW_NO_INSTALL_CLEANUP: 1
         run: brew install lcov
 
-      - name: build-and-test
-        run: make tests_full CC=clang STD_C=${{ matrix.build_config.std }} EXTRA_CFLAGS="${{ matrix.build_config.opt }} -DEM_SAFETY_POLICY=${{ matrix.policy }} -DEM_ASSERT_STAYS"
+      - name: run-matrix-tests
+        run: make test_matrix CC=clang -j$(sysctl -n hw.logicalcpu) -Otarget
       
       - name: generate-coverage
-        if: matrix.policy == 1 && matrix.build_config.opt == '-O0' && matrix.build_config.std == 'c99'
-        run: make coverage CC=clang STD_C=${{ matrix.build_config.std }} EXTRA_CFLAGS="${{ matrix.build_config.opt }}"
+        run: make coverage CC=clang STD_C=c99 EXTRA_CFLAGS="-O0"
 
       - name: upload-codecov
-        if: matrix.policy == 1 && matrix.build_config.opt == '-O0' && matrix.build_config.std == 'c99' && github.repository == 'EasyMem/easy_memory'
+        if: github.repository == 'EasyMem/easy_memory'
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}

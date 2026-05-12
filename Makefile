@@ -70,7 +70,6 @@ FUZZ_FLAGS = -fsanitize=fuzzer,address,undefined -O3 -g3 -fno-omit-frame-pointer
 FUZZ_DEBUG_FLAGS = -fsanitize=fuzzer,address,undefined -O0 -g3 -fno-omit-frame-pointer -DEM_FUZZ_DEBUG -DDEBUG
 
 # Define the primary source file to check coverage for.
-# Adjust if your implementation is in a .c file.
 COVERAGE_SRC = easy_memory.h
 
 .PHONY: all clean run tests tests_full list coverage build_coverage
@@ -203,6 +202,81 @@ coverage: clean build_coverage
 	@printf "Successfully generated final coverage.info for Codecov.\n"
 
 
+# ==========================================
+# Automated Matrix Testing System
+# ==========================================
+
+MATRIX_STDS ?= c99 c11 c17 c2x
+MATRIX_OPTS ?= O0 O1 O2 O3 Os Oz
+MATRIX_POLS ?= 0 1
+MATRIX_DIR  ?= build_matrix
+
+# Extract bare test names
+MATRIX_TEST_NAMES := $(patsubst $(TEST_DIR)/%.c,%,$(TEST_SRCS))
+MATRIX_RUN_TARGETS :=
+
+# Template to generate a specific target for each combination
+define MATRIX_RULE
+# Override global variables for this specific binary
+$(MATRIX_DIR)/$(1)_$(2)_p$(3)/$(4): STD_C := $(1)
+$(MATRIX_DIR)/$(1)_$(2)_p$(3)/$(4): EXTRA_CFLAGS := -$(2) -DEM_SAFETY_POLICY=$(3) -DEM_ASSERT_STAYS
+
+# Compilation step
+$(MATRIX_DIR)/$(1)_$(2)_p$(3)/$(4): $(TEST_DIR)/$(4).c easy_memory.h $(TEST_DIR)/test_utils.h
+	@mkdir -p $$(@D)
+	$$(CC) $$(CFLAGS) $$(SAN_FLAGS) $$< -o $$@
+
+# Execution step
+.PHONY: run_matrix_$(1)_$(2)_p$(3)_$(4)
+run_matrix_$(1)_$(2)_p$(3)_$(4): $(MATRIX_DIR)/$(1)_$(2)_p$(3)/$(4)
+	@printf "\n=== Running: Std: $(1) | Opt: -$(2) | Pol: $(3) | Test: $(4) ===\n"
+	@if $$(LSAN_RUN_FIX) ./$$< ; then \
+		printf "[OK] Test passed.\n"; \
+	else \
+		printf "[FAIL] Test failed!\n"; \
+		touch $$<.FAILED; \
+		exit 1; \
+	fi
+
+MATRIX_RUN_TARGETS += run_matrix_$(1)_$(2)_p$(3)_$(4)
+endef
+
+# Evaluate the template for every combination
+$(foreach s,$(MATRIX_STDS), \
+  $(foreach o,$(MATRIX_OPTS), \
+    $(foreach p,$(MATRIX_POLS), \
+      $(foreach t,$(MATRIX_TEST_NAMES), \
+        $(eval $(call MATRIX_RULE,$(s),$(o),$(p),$(t)))))))
+
+.PHONY: test_matrix _matrix_run_all clean_matrix
+
+# Internal target to depend on all runs
+_matrix_run_all: $(MATRIX_RUN_TARGETS)
+
+# Main matrix entrypoint
+test_matrix:
+	@mkdir -p $(MATRIX_DIR)
+	@find $(MATRIX_DIR) -name "*.FAILED" -type f -delete 2>/dev/null || true
+	@+$(MAKE) --no-print-directory _matrix_run_all -k || true
+	@FAILURES=$$(find $(MATRIX_DIR) -name "*.FAILED" 2>/dev/null); \
+	if [ -n "$$FAILURES" ]; then \
+		printf "\n========================================\n"; \
+		printf "         FAILED COMBINATIONS            \n"; \
+		printf "========================================\n"; \
+		for f in $$FAILURES; do \
+			combo=$$(basename $$(dirname $$f)); \
+			testname=$$(basename $$f .FAILED); \
+			printf " [X] $$combo -> $$testname\n"; \
+		done; \
+		printf "========================================\n"; \
+		exit 1; \
+	else \
+		printf "\n=== All $(words $(MATRIX_RUN_TARGETS)) Matrix Tests Passed ===\n"; \
+	fi
+
+clean_matrix:
+	rm -rf $(MATRIX_DIR)
+
 # Cleaning binary files and coverage files
 clean:
 	rm -f $(TEST_SRCS:%.c=%_silent) $(TEST_SRCS:%.c=%_debug) $(TEST_COV_BINS)
@@ -211,6 +285,7 @@ clean:
 	rm -f $(TEST_DIR)/*.gcda $(TEST_DIR)/*.gcno # Clean coverage data files
 	rm -f coverage.info
 	rm -f $(FUZZ_BINS) $(FUZZ_DEBUG_BINS)
+	rm -rf $(MATRIX_BUILD_DIR)
 
 
 # --- Fuzzing Targets ---

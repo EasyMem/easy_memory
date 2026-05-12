@@ -82,22 +82,13 @@ jobs:
   # 2. LINUX CLANG (x86_64, x86_32, Native ARM64)
   # ==========================================
   linux-clang:
-    name: linux-clang-${{ matrix.os }}-arch${{ matrix.arch }}-opt${{ matrix.build_config.opt }}-std${{ matrix.build_config.std }}-pol${{ matrix.policy }}
+    name: linux-clang-${{ matrix.os }}-arch${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm]
         arch: [64, 32]
-        policy: [1]
-        build_config:
-          - { std: c99, opt: "-O0" }
-          - { std: c99, opt: "-O2" }
-          - { std: c99, opt: "-O3" }
-          - { std: c99, opt: "-Oz" }
-          - { std: c11, opt: "-O2" }
-          - { std: c17, opt: "-O2" }
-          - { std: c2x, opt: "-O2" }
         exclude:
           - os: ubuntu-24.04-arm
             arch: 32
@@ -106,12 +97,12 @@ jobs:
       - uses: actions/checkout@v6
       - name: install-dependencies
         run: |
-          sudo apt-get update && sudo apt-get install -y clang lcov
+          sudo apt-get update && sudo apt-get install -y clang
           if [ "${{ matrix.arch }}" == "32" ]; then sudo apt-get install -y gcc-multilib; fi
           echo "CC_CMD=$([ "${{ matrix.arch }}" == "32" ] && echo 'clang -m32' || echo 'clang')" >> $GITHUB_ENV
 
-      - name: build-and-test
-        run: make tests_full CC="${CC_CMD}" STD_C=${{ matrix.build_config.std }} EXTRA_CFLAGS="${{ matrix.build_config.opt }} -DEM_SAFETY_POLICY=${{ matrix.policy }} -DEM_ASSERT_STAYS"
+      - name: run-matrix-tests
+        run: make test_matrix CC="${CC_CMD}" -j$(nproc) -Otarget
 
   # ==========================================
   # 3. MACOS (Intel x86_64 & M-series ARM64)
@@ -134,7 +125,7 @@ jobs:
         run: brew install lcov
 
       - name: run-matrix-tests
-        run: make test_matrix CC=clang -j$(sysctl -n hw.logicalcpu) -Otarget
+        run: make test_matrix CC=clang -j$(sysctl -n hw.logicalcpu)
       
       - name: generate-coverage
         run: make coverage CC=clang STD_C=c99 EXTRA_CFLAGS="-O0"

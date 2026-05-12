@@ -94,6 +94,21 @@ typedef struct Slab  Slab;
 #endif
 
 /*
+ * Configuration: Architecture Verification
+ * easy_memory relies heavily on bit-packing, tight alignment math, and standard 
+ * pointer sizes. We must ensure the architecture uses standard 8-bit bytes.
+ * Exotic architectures (e.g., DSPs with 16-bit bytes) are strictly not supported.
+ */
+#if defined(__CHAR_BIT__)
+#   define EM_INTERNAL_CHAR_BIT __CHAR_BIT__
+#else
+    /* Fallback to limits.h if builtins are not available */
+#   include <limits.h>
+#   define EM_INTERNAL_CHAR_BIT CHAR_BIT
+#endif
+EM_STATIC_ASSERT(EM_INTERNAL_CHAR_BIT == 8, "EasyMem requires 8-bit byte architecture");
+
+/*
  * Configuration: EMDEF Macro
  * Controls the linkage of the Easy Memory functions.
  * 
@@ -2054,6 +2069,26 @@ static inline void slab_set_index(Slab *slab, size_t index) {
     slab->as.self.free_index_and_chunk_high = (index << EMSLAB_INDEX_SHIFT) | preserved_bits;
 }
 
+/*
+ * Get easy memory from slab
+ * Extracts the easy memory pointer stored in the slab's as.block_representation field
+ */
+static inline EM *slab_get_em(const Slab *slab) {
+    EM_ASSERT((slab != NULL) && "Internal Error: 'slab_get_em' called on NULL slab");
+
+    return get_em(&(slab->as.block_representation)); // Return pointer to the parent easy memory
+}
+
+/*
+ * Set easy memory for slab
+ * Updates the easy memory pointer in the slab's as.block_representation field
+ */
+static inline void slab_set_em(Slab *slab, EM *em) {
+    EM_ASSERT((slab != NULL)  && "Internal Error: 'slab_set_em' called on NULL slab");
+    EM_ASSERT((em != NULL)    && "Internal Error: 'slab_set_em' called on NULL easy memory");
+    set_em(&(slab->as.block_representation), em); // Set pointer to the parent easy memory;
+}
+
 
 
 
@@ -2993,8 +3028,7 @@ static inline Slab *slab_create_internal(EM *EM_RESTRICT parent_em, size_t slab_
 
     Slab *slab = (Slab *)((void *)block);
 
-    slab->as.self.em = parent_em;
-
+    slab_set_em(slab, parent_em);
     slab_set_chunk_size(slab, chunk_size);
     slab_set_index(slab, 1);
 
@@ -4592,7 +4626,7 @@ EMDEF void em_slab_destroy(Slab *slab) {
 
     set_reserved_bits(&(slab->as.block_representation), 0);
 
-    em_free_block_full(slab->as.self.em, (Block *)slab);
+    em_free_block_full(slab_get_em(slab), (Block *)slab);
 }
 
 

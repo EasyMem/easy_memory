@@ -187,15 +187,13 @@ jobs:
   # 5. WINDOWS (x64, x86, ARM64)
   # ==========================================
   windows-tests:
-    name: windows-arch${{ matrix.arch }}-tc-${{ matrix.toolchain }}-opt${{ matrix.opt }}-pol${{ matrix.policy }}
+    name: windows-arch${{ matrix.arch }}-tc-${{ matrix.toolchain }}
     runs-on: ${{ matrix.arch == 'arm64' && 'windows-11-arm' || 'windows-latest' }}
     strategy:
       fail-fast: false
       matrix:
         arch: [x64, x86, arm64]
         toolchain: [msvc, mingw]
-        opt: ['0', '2', '3']
-        policy: [1, 0]
         exclude:
           - toolchain: mingw
             arch: arm64
@@ -215,33 +213,47 @@ jobs:
       - name: build-and-test-mingw
         if: matrix.toolchain == 'mingw'
         shell: msys2 {0}
-        run: make tests_full CC=gcc EXTRA_CFLAGS="-O${{ matrix.opt }} -DEM_SAFETY_POLICY=${{ matrix.policy }} -DEM_ASSERT_STAYS"
+        run: make test_matrix CC=gcc MATRIX_OPTS="O0 O1 O2 O3 Os" -j$(nproc)
 
       - name: build-and-test-msvc
         if: matrix.toolchain == 'msvc'
         shell: cmd
         run: |
-          if "${{ matrix.opt }}"=="0" set MSVC_OPT=/Od
-          if "${{ matrix.opt }}"=="2" set MSVC_OPT=/O2
-          if "${{ matrix.opt }}"=="3" set MSVC_OPT=/Ox
-          
           if "${{ matrix.arch }}"=="x86" ( call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars32.bat" ) else if "${{ matrix.arch }}"=="arm64" ( call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsarm64.bat" ) else ( call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat" )
           
           cd tests
-          FOR %%f IN (*.c) DO (
-            cl.exe /W4 /WX /DDEBUG /DEM_SAFETY_POLICY=${{ matrix.policy }} /DEM_ASSERT_STAYS %MSVC_OPT% /I.. /Fe:%%~nf.exe %%f
-            if errorlevel 1 exit /b 1
-            call %%~nf.exe
-            if errorlevel 1 exit /b 1
+          setlocal EnableDelayedExpansion
+          set "FAILED=0"
+          
+          FOR %%O IN (/Od /O2 /Ox) DO (
+            FOR %%P IN (0 1) DO (
+              echo === MSVC Opt:%%O Pol:%%P ===
+              FOR %%f IN (*.c) DO (
+                cl.exe /nologo /W4 /WX /DDEBUG /DEM_SAFETY_POLICY=%%P /DEM_ASSERT_STAYS %%O /I.. /Fe:%%~nf.exe %%f >nul
+                if errorlevel 1 (
+                  echo [FAIL] Compile %%f
+                  set FAILED=1
+                ) else (
+                  %%~nf.exe >nul 2>&1
+                  if errorlevel 1 (
+                    echo [FAIL] Run %%f
+                    set FAILED=1
+                  ) else (
+                    echo [OK] %%f
+                  )
+                )
+              )
+            )
           )
+          if "!FAILED!"=="1" exit /b 1
         
       - name: generate-coverage-mingw
-        if: matrix.toolchain == 'mingw' && matrix.policy == 1 && matrix.opt == '0'
+        if: matrix.toolchain == 'mingw' && github.repository == 'EasyMem/easy_memory'
         shell: msys2 {0}
-        run: make coverage CC=gcc EXTRA_CFLAGS="-O0"
+        run: make coverage CC=gcc EXTRA_CFLAGS="-O0 -DEM_SAFETY_POLICY=1"
         
       - name: upload-codecov
-        if: matrix.toolchain == 'mingw' && matrix.policy == 1 && matrix.opt == '0' && github.repository == 'EasyMem/easy_memory'
+        if: matrix.toolchain == 'mingw' && github.repository == 'EasyMem/easy_memory'
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}

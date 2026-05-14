@@ -339,10 +339,12 @@ EM_STATIC_ASSERT((EM_POISON_BYTE >= 0x00) && (EM_POISON_BYTE <= 0xFF), "EM_POISO
  * Configuration: Minimum Buffer Size
  * Defines the minimum size of the usable memory buffer within a block.
  * This prevents creation of useless zero-sized free blocks.
- * Default is 16 bytes, but can be customized by defining EM_MIN_BUFFER_SIZE before including this header.
+ * Default is 2 * sizeof(uintptr_t) bytes(2 words) to prevent creating blocks 
+ * where useful data significantly smaller than the header(4 words).
+ * Can be customized by defining EM_MIN_BUFFER_SIZE before including this header.
 */
 #ifndef EM_MIN_BUFFER_SIZE
-#   define EM_MIN_BUFFER_SIZE 16 
+#   define EM_MIN_BUFFER_SIZE (2 * sizeof(uintptr_t))
 #endif
 EM_STATIC_ASSERT(EM_MIN_BUFFER_SIZE > 0, "MIN_BUFFER_SIZE must be a positive value to prevent creation of useless zero-sized free blocks.");
 
@@ -404,6 +406,55 @@ EM_STATIC_ASSERT((EM_MAGIC != 0), "EM_MAGIC must be a non-zero value to ensure e
 EM_STATIC_ASSERT((EM_DEFAULT_ALIGNMENT & (EM_DEFAULT_ALIGNMENT - 1)) == 0, "EM_DEFAULT_ALIGNMENT must be a power of two.");
 EM_STATIC_ASSERT(EM_DEFAULT_ALIGNMENT >= EMMIN_ALIGNMENT, "EM_DEFAULT_ALIGNMENT must be at least EMMIN_ALIGNMENT.");
 EM_STATIC_ASSERT(EM_DEFAULT_ALIGNMENT <= EMMAX_ALIGNMENT, "EM_DEFAULT_ALIGNMENT must be at most EMMAX_ALIGNMENT.");
+
+
+/*
+ * Constant: Maximum LLRB Tree Height
+ * Defines the exact, mathematical maximum stack depth required for iterative 
+ * tree traversal algorithms (insertion, deletion) to prevent recursion.
+ * 
+ * Rationale:
+ * Since this allocator targets environments ranging from 64-bit servers down to 
+ * 16-bit bare-metal microcontrollers, using a static "safe" stack array (e.g., 
+ * 128 elements) is unacceptable. It wastes RAM on MCUs and risks stack overflows. 
+ * We must compute the strict minimum required depth at compile-time.
+ * 
+ * Mathematical Limits:
+ * 1. Max Capacity Limit: 2^(WORD_BITS - 3) bytes (due to 3 reserved bits in EM header).
+ * 2. Min Block Size: 6 machine words (4 words EM header + 2 words minimum buffer).
+ * 3. Max Nodes (N): Max Capacity / Min Block Size (worst-case fragmentation scenario).
+ * 4. Max LLRB Depth (H): Structurally guaranteed to be H <= 2 * log2(N + 1).
+ * 
+ * Calculated worst-case boundaries:
+ *  -- 64-bit (Word: 8B, Min Block: 48B):  Max N ≈ 2^55.4 -> Max H = 111
+ *  -- 32-bit (Word: 4B, Min Block: 24B):  Max N ≈ 2^24.4 -> Max H = 49
+ *  -- 16-bit (Word: 2B, Min Block: 12B):  Max N ≈ 2^9.4  -> Max H = 19
+ * 
+ * Deriving the Formula:
+ * The true depth formula expands to: H = 2 * (WORD_BITS - 3 - log2(6 * WORD_BYTES)).
+ * Since log2() cannot be used in the preprocessor, we approximate this curve:
+ * 
+ *   a) The "-12" baseline offset (derived from WORD_BITS - 6):
+ *      We lose exactly 3 bits of representable space to the header capacity flags.
+ *      We "lose" another ~2.58 bits because the smallest node requires 6 words of 
+ *      space (log2(6) ≈ 2.58). Rounding 2.58 up to 3 means we effectively subtract 
+ *      6 bits from WORD_BITS. Multiplying by the LLRB height factor of 2 gives us 
+ *      the flat baseline reduction of -12.
+ * 
+ *   b) The architecture divergence (-0.5 multiplier):
+ *      The remaining log2(WORD_BYTES) part causes the depth to diverge slightly across 
+ *      architectures. To linearize this without complex math, we reduce the base 
+ *      word multiplier from 16 to 15.5.
+ * 
+ * Final linear approximation: (15.5 * sizeof(void*)) - 12
+ * Expressed as integer math:  ((31 * sizeof(void*)) / 2) - 12
+ * 
+ * Bounds Verification:
+ *  -- 64-bit (8B): (31 * 8) / 2 - 12 = 112 (Safely covers 111, +1 safety margin)
+ *  -- 32-bit (4B): (31 * 4) / 2 - 12 = 50  (Safely covers 49,  +1 safety margin)
+ *  -- 16-bit (2B): (31 * 2) / 2 - 12 = 19  (Exactly covers 19, zero wasted space)
+ */
+#define EM_MAX_TREE_HEIGHT (((31 * sizeof(Block*)) / 2) - 12)
 
 
 /*

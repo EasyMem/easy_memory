@@ -2366,12 +2366,11 @@ static Block *balance(Block *h) {
 }
 
 /*
- * Insert block into LLRB tree
- * Inserts a new free block into the LLRB tree based on size, alignment, and address
+ * Compare two blocks for LLRB positioning
+ * Compares two blocks based on size, alignment quality, and address for LLRB tree ordering
+ * Returns: < 0 if 'a' should go left of 'b', > 0 if right.
  */
-static Block *insert_block(Block *h, Block *new_block) {
-    EM_ASSERT((new_block != NULL) && "Internal Error: 'insert_block' called on NULL new_block");
-
+static inline int compare_blocks(Block *a, Block *b) {
     /*
      * Logic Overview:
      * This function utilizes a "Triple-Key" insertion strategy to keep the free-block tree
@@ -2393,36 +2392,91 @@ static Block *insert_block(Block *h, Block *new_block) {
      *    ordering is deterministic.
     */
 
-    if (h == NULL) return new_block;
+    size_t a_size = get_size(a);
+    size_t b_size = get_size(b);
 
-    size_t h_size = get_size(h);
-    size_t new_size = get_size(new_block);
+    if (a_size < b_size) return -1;
+    if (a_size > b_size) return 1;
 
-    if (new_size < h_size) {
-        set_left_tree(h, insert_block(get_left_tree(h), new_block));
-    } 
-    else if (new_size > h_size) {
-        set_right_tree(h, insert_block(get_right_tree(h), new_block));
-    } 
-    else {
-        size_t h_quality = min_exponent_of((uintptr_t)block_data(h));
-        size_t new_quality = min_exponent_of((uintptr_t)block_data(new_block));
+    size_t a_quality = min_exponent_of((uintptr_t)block_data(a));
+    size_t b_quality = min_exponent_of((uintptr_t)block_data(b));
 
-        if (new_quality < h_quality) {
-            set_left_tree(h, insert_block(get_left_tree(h), new_block));
-        }
-        else if (new_quality > h_quality) {
-            set_right_tree(h, insert_block(get_right_tree(h), new_block));
-        }
-        else {
-            if ((uintptr_t)new_block > (uintptr_t)h)
-                set_left_tree(h, insert_block(get_left_tree(h), new_block));
-            else
-                set_right_tree(h, insert_block(get_right_tree(h), new_block));
+    if (a_quality < b_quality) return -1;
+    if (a_quality > b_quality) return 1;
+
+    // Tertiary tie-breaker: larger address goes left (matching original design)
+    return ((uintptr_t)a > (uintptr_t)b) ? -1 : 1;
+}
+
+/*
+ * Insert block into LLRB tree
+ * Inserts a new free block iteratively based on size, alignment, and address
+ */
+static Block *insert_block(Block *h, Block *new_block) {
+    EM_ASSERT((new_block != NULL) && "Internal Error: 'insert_block' called on NULL new_block");
+
+    if (h == NULL) {
+        set_color(new_block, EMBLACK);
+        return new_block;
+    }
+
+    Block *path[EM_MAX_TREE_HEIGHT];
+    int depth = 0;
+    Block *current = h;
+
+    /* 
+     * PHASE 1: Downward Search 
+     * Descend the tree to find the insertion point, saving the path.
+     */
+    while (current != NULL) {
+        EM_ASSERT((depth < EM_MAX_TREE_HEIGHT) && "Internal Error: LLRB max depth exceeded");
+        path[depth++] = current;
+        
+        if (compare_blocks(new_block, current) < 0) {
+            current = get_left_tree(current);
+        } else {
+            current = get_right_tree(current);
         }
     }
 
-    return balance(h);
+    /* 
+     * PHASE 2: Attachment
+     * Attach the new red leaf to the last node in our path.
+     */
+    set_color(new_block, EMRED);
+    Block *parent = path[depth - 1];
+    
+    if (compare_blocks(new_block, parent) < 0) {
+        set_left_tree(parent, new_block);
+    } else {
+        set_right_tree(parent, new_block);
+    }
+
+    /* 
+     * PHASE 3: Bottom-Up Rebalancing
+     * Walk back up the saved path to balance the tree, simulating recursive unwinding.
+     */
+    for (int i = depth - 1; i >= 0; i--) {
+        Block *node = path[i];
+        Block *balanced = balance(node);
+
+        if (i > 0) {
+            Block *upper_parent = path[i - 1];
+            // Update parent's link, as balance() might have rotated 'node'
+            if (get_left_tree(upper_parent) == node) {
+                set_left_tree(upper_parent, balanced);
+            } else {
+                set_right_tree(upper_parent, balanced);
+            }
+        } else {
+            // We have reached the root
+            h = balanced; 
+        }
+    }
+
+    // LLRB property: root is always black
+    set_color(h, EMBLACK); 
+    return h;
 }
 
 /*

@@ -2421,7 +2421,7 @@ static Block *insert_block(Block *h, Block *new_block) {
     }
 
     Block *path[EM_MAX_TREE_HEIGHT];
-    int depth = 0;
+    size_t depth = 0;
     Block *current = h;
 
     /* 
@@ -2456,7 +2456,7 @@ static Block *insert_block(Block *h, Block *new_block) {
      * PHASE 3: Bottom-Up Rebalancing
      * Walk back up the saved path to balance the tree, simulating recursive unwinding.
      */
-    for (int i = depth - 1; i >= 0; i--) {
+    for (size_t i = depth; i-- > 0;) {
         Block *node = path[i];
         Block *balanced = balance(node);
 

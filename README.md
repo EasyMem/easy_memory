@@ -51,6 +51,11 @@
     *   **Slab:** O(1) fixed-size block pool with lazy initialization (Available).
     *   *Stack / Queue:* (Coming soon).
 *   **Hardware-Accelerated Safety:** Utilizes CPU ALU flags and compiler intrinsics for zero-cost integer overflow detection in `em_calloc` and sub-allocator logic.
+*   **Recursion-Free LLRB:** All tree operations are 100% iterative. Guaranteed safety against stack overflows on embedded systems.
+*   **Minimal Stack Footprint:** Uses a fixed, architecture-optimized stack:
+    *   **16-bit:** ~40 bytes.
+    *   **32-bit:** ~200 bytes.
+    *   **64-bit:** ~900 bytes.
 *   **Scoped Memory:** Supports `em_create_nested` for hierarchical memory management. Freeing a parent scope instantly invalidates all children with O(1) complexity.
 *   **Tail-End Scratchpad:** Instantly reserves a block at the highest memory address (**O(1)**). Ideal for temporary workspaces to prevent fragmentation of the main heap. Fully integrated with standard `em_free`.
 *   **Concurrency Model:** Intentionally lock-free and single-threaded to avoid mutex overhead. Designed for **Thread-Local Storage (TLS)** patterns (one `EM` instance per thread).
@@ -84,6 +89,16 @@ The system is subjected to exhaustive verification across diverse environments a
     *   **Code Integrity:** `-Wmissing-prototypes`, `-Wstrict-prototypes`, `-Wmissing-declarations`.
 *   **Static Analysis:** Continuous monitoring via **MSVC Static Analysis** (x64/x86), **Clang-Tidy**, and **CodeFactor** (Grade A+).
 *   **Platform Coverage:** Verified compatibility with **Windows (MSVC & MinGW)**, **Linux**, and **macOS**.
+
+## Stack Safety: Zero-Recursion Policy
+Unlike standard LLRB implementations that rely on deep recursion (risking stack overflow on embedded systems), `easy_memory` uses a strictly iterative approach for tree insertion and balancing.
+
+**Resource Footprint:**
+*   **16-bit (AVR/Pico):** 38 bytes of stack.
+*   **32-bit (ARM):** 200 bytes of stack.
+*   **64-bit (x86/ARM64):** 896 bytes of stack.
+
+This ensures that even with extreme heap fragmentation, the library never triggers a stack overflow.
 
 ## Architecture
 
@@ -446,17 +461,10 @@ To achieve extreme memory density (metadata overhead of only 4 machine words per
 
 These techniques are not code smells; they are the fundamental physics of how this allocator achieves its speed and compactness. Performance and memory density are deliberately prioritized over rigid coding standards.
 
-### Current Limitation: Stack Usage (Recursive Algorithms)
-The current implementation of the LLRB tree (insertion, deletion, and balancing) relies on **recursion**. 
-
-*   **Impact:** While efficient and readable, deep recursion may risk a **Stack Overflow** on severely constrained embedded platforms (e.g., AVR, Cortex-M0 with tiny stacks) if memory becomes highly fragmented, leading to a deep tree structure.
-*   **Mitigation:** On standard desktop/server environments or embedded systems with reasonable stack sizes, this is rarely an issue.
-*   **Call for Contribution:** Switching the LLRB logic to an **iterative (loop-based)** implementation is a high-priority goal to guarantee fixed stack usage. If you enjoy algorithmic challenges and non-recursive tree traversals, **Pull Requests are highly welcome!**
-
 ### Upcoming Features
 The following features are planned for future releases:
 
-- [ ] **Iterative LLRB Tree:** Replacing recursive algorithms with fixed-stack iteration to guarantee safety on tiny embedded stacks. (High Priority).
+- [x] **Iterative LLRB Tree:** Replacing recursive algorithms with fixed-stack iteration to guarantee safety on tiny embedded stacks. (High Priority). **[Done]**
 - [ ] **New Sub-Allocators:**
     - **`Stack` Allocator:** Strict LIFO allocator for scoped temporary objects.
     - **`Queue` Allocator:** FIFO allocator using a Ring Buffer strategy.

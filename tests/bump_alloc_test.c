@@ -38,7 +38,7 @@ static void test_bump_creation(void) {
     ASSERT(bump == NULL, "Bump allocator creation with zero size should fail");
     if (bump) em_bump_destroy(bump);
 
-    bump = em_bump_create(em, 10);
+    bump = em_bump_create(em, EM_MIN_BUFFER_SIZE - 1);
     ASSERT(bump == NULL, "Bump creation with too small positive size should fail");
     if (bump) em_bump_destroy(bump);
 
@@ -333,7 +333,7 @@ static void test_bump_trim(void) {
         print_fancy(bump_get_em(bump), 101);
         #endif
 
-        ASSERT(bump_get_capacity(bump) == 16, "Trim should align capacity up");
+        ASSERT(bump_get_capacity(bump) == EM_MIN_BUFFER_SIZE, "Trim should align capacity up");
         
         em_destroy(em);
     }

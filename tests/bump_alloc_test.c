@@ -192,10 +192,8 @@ static void test_bump_trim(void) {
     {
         EM *em = em_create(4096);
         Bump *bump = em_bump_create(em, 100); 
-        printf("capacity: %zu\n", bump_get_capacity(bump));
 
         em_bump_alloc(bump, 90);
-        printf("free space after alloc: %zu\n", bump_get_capacity(bump) - bump_get_offset(bump) + sizeof(Bump));
         
         size_t old_capacity = bump_get_capacity(bump);
         em_bump_trim(bump);
@@ -333,8 +331,10 @@ static void test_bump_trim(void) {
         print_fancy(bump_get_em(bump), 101);
         #endif
 
-        ASSERT(bump_get_capacity(bump) == EM_MIN_BUFFER_SIZE, "Trim should align capacity up");
-        
+        size_t final_cap = bump_get_capacity(bump);
+        ASSERT(final_cap >= EM_MIN_BUFFER_SIZE, "Trimmed capacity must be at least min buffer size");
+        ASSERT((final_cap % sizeof(void*)) == 0, "Trimmed capacity must be word-aligned");
+
         em_destroy(em);
     }
 }

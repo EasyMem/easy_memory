@@ -7,12 +7,13 @@ UNAME_M := $(shell uname -m)
 ASAN_OPTS = allocator_may_return_null=1:detect_stack_use_after_return=1
 SAN_FLAGS = -fsanitize=address,undefined
 
-LSAN_RUN_FIX = 
+LSAN_RUN_FIX = LSAN_OPTIONS="detect_leaks=0"
 
 ifeq ($(UNAME_S), Linux)
     ifeq ($(UNAME_M), x86_64)
         SAN_FLAGS += -fsanitize=leak
         ASAN_OPTS := $(ASAN_OPTS):detect_leaks=1
+		LSAN_RUN_FIX = LSAN_OPTIONS="detect_leaks=1"
     else
         LSAN_RUN_FIX = ASAN_OPTIONS="$(ASAN_OPTS):detect_leaks=0" LSAN_OPTIONS="detect_leaks=0"
     endif
@@ -51,7 +52,6 @@ LDFLAGS_COV = --coverage # Linker flag for coverage
 
 export UBSAN_OPTIONS=halt_on_error=0:exitcode=1:print_stacktrace=1
 export ASAN_OPTIONS=$(ASAN_OPTS)
-export LSAN_OPTIONS=detect_leaks=0
 
 TEST_DIR = tests
 TEST_SRCS = $(wildcard $(TEST_DIR)/*.c)
@@ -224,7 +224,7 @@ $(MATRIX_DIR)/$(1)_$(2)_p$(3)/$(4): EXTRA_CFLAGS := -$(2) -DEM_SAFETY_POLICY=$(3
 # Compilation step
 $(MATRIX_DIR)/$(1)_$(2)_p$(3)/$(4): $(TEST_DIR)/$(4).c easy_memory.h $(TEST_DIR)/test_utils.h
 	@mkdir -p $$(@D)
-	$$(CC) $$(CFLAGS) $$(SAN_FLAGS) $$< -o $$@
+	$(CC) $$(CFLAGS) $$(SAN_FLAGS) $$< -o $$@ || (touch $$@.FAILED && exit 1)
 
 # Execution step
 .PHONY: run_matrix_$(1)_$(2)_p$(3)_$(4)
@@ -285,7 +285,8 @@ clean:
 	rm -f $(TEST_DIR)/*.gcda $(TEST_DIR)/*.gcno # Clean coverage data files
 	rm -f coverage.info
 	rm -f $(FUZZ_BINS) $(FUZZ_DEBUG_BINS)
-	rm -rf $(MATRIX_BUILD_DIR)
+	rm -rf $(MATRIX_DIR)
+	rm -f test_fallback
 
 
 # --- Fuzzing Targets ---

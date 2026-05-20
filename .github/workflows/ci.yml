@@ -229,14 +229,14 @@ jobs:
             FOR %%P IN (0 1) DO (
               echo === MSVC Opt:%%O Pol:%%P ===
               FOR %%f IN (*.c) DO (
-                cl.exe /nologo /W4 /WX /DDEBUG /DEM_SAFETY_POLICY=%%P /DEM_ASSERT_STAYS %%O /I.. /Fe:%%~nf.exe %%f
-                if %errorlevel% neq 0 (
+                cl.exe /nologo /W4 /std:c11 /WX /DDEBUG /DEM_SAFETY_POLICY=%%P /DEM_ASSERT_STAYS %%O /I.. /Fe:%%~nf.exe %%f
+                if !errorlevel! neq 0 (
                   echo [FAIL] Compile %%f
                   set FAILED=1
                 ) else (
                   echo [Running] %%~nf.exe
                   %%~nf.exe
-                  if %errorlevel% neq 0 (
+                  if !errorlevel! neq 0 (
                     echo [FAIL] Run %%f
                     set FAILED=1
                   ) else (

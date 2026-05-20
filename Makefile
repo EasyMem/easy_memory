@@ -224,7 +224,7 @@ $(MATRIX_DIR)/$(1)_$(2)_p$(3)/$(4): EXTRA_CFLAGS := -$(2) -DEM_SAFETY_POLICY=$(3
 # Compilation step
 $(MATRIX_DIR)/$(1)_$(2)_p$(3)/$(4): $(TEST_DIR)/$(4).c easy_memory.h $(TEST_DIR)/test_utils.h
 	@mkdir -p $$(@D)
-	$(CC) $$(CFLAGS) $$(SAN_FLAGS) $$< -o $$@ || (touch $$@.FAILED && exit 1)
+	$$(CC) $$(CFLAGS) $$(SAN_FLAGS) $$< -o $$@ || (touch $$@.FAILED && exit 1)
 
 # Execution step
 .PHONY: run_matrix_$(1)_$(2)_p$(3)_$(4)

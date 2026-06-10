@@ -44,6 +44,7 @@
     *   Strict compliance with **Strict Aliasing** rules ensures that aggressive compiler optimizations never break memory logic.
 *   **Triple-Key LLRB Tree:** Free blocks are sorted by **Size**, **Alignment Quality** (CTZ), and **Address**. This reduces fragmentation by prioritizing blocks that *naturally* satisfy alignment requirements before splitting new memory.
 *   **Flexible Alignment:** Supports per-allocation alignment requests (powers of two, up to **512 bytes**). Ideal for SIMD vectors and cache-line aligned buffers.
+*   **Active Alignment-Gap Recycling:** Reclaims padding when allocating blocks with strict alignment requirements (e.g., placing a heavily aligned buffer inside a standard EM instance). If the skipped gap before the aligned pointer is at least `EM_MIN_BUFFER_SIZE`, the system automatically splits this gap, carves out a new free block, and returns it to the LLRB tree. This prevents dead memory space and minimizes fragmentation on resource-constrained hardware.
 *   **Low Overhead:** Metadata consumes only **4 machine words** per block (16 bytes on 32-bit, 32 bytes on 64-bit).
 *   **Bit-Packed Efficiency:** Alignment exponents are packed into the size field, and flags utilize pointer tagging. This results in minimal metadata overhead per block.
 *   **Modular Sub-Allocators:** Designed as a foundation for specialized allocators. All sub-allocators have **zero-overhead creation** (cost equivalent to a single standard allocation).
@@ -64,6 +65,7 @@
     *   **Strict Validation:** Runtime checks ensure integrity of the heap structure.
 *   **Embedded Ready:** No `libc` dependency. Can run on bare metal (`EM_NO_MALLOC`).
 *   **Extreme Portability:** Verified across a wide range of compilers, operating systems, hardware architectures, and endianness types. (See *Verified Platforms* below).
+*   **Zero-Feature-Degradation Portability:** Scales dynamically with 100% feature parity from 16-bit MCUs to 64-bit servers. Advanced capabilities like arbitrary alignment, iterative LLRB trees, and sub-allocators remain fully active with zero conditional feature cuts (see *Zero-Feature-Degradation Portability* below).
 *   **Full C++ Compatibility:** Wrapped in `extern "C"` for seamless integration into C++ projects.
 *   **Excellent Developer Experience:**
     *   **Fuzzing & Replay:** Built-in Makefile targets to run specialized fuzzers and instantly replay crash files (`make replay_[name] CRASH=...`) with a step-by-step ASCII visualization of the heap state.
@@ -99,6 +101,14 @@ Unlike standard LLRB implementations that rely on deep recursion (risking stack 
 *   **64-bit (x86/ARM64):** 896 bytes of stack.
 
 This ensures that even with extreme heap fragmentation, the library never triggers a stack overflow.
+
+## Zero-Feature-Degradation Portability
+
+Unlike many memory managers that disable advanced features on smaller microcontrollers, `easy_memory` scales dynamically with **100% feature parity** from 16-bit MCUs to 64-bit servers.
+
+*   **Unified Engine:** The exact same codebase runs identically on a 16-bit ATmega or RP2040 as it does on modern x86_64 or IBM z/Architecture. No features are stripped or degraded.
+*   **Dynamic Metadata Scaling:** All bit-packing, pointer tagging, and structural offsets automatically scale based on the native word size (`sizeof(uintptr_t)`).
+*   **Zero Compromises:** Arbitrary alignment, iterative LLRB trees, nested scopes, and all sub-allocators (Slab/Bump) remain fully functional on any target architecture with zero conditional feature cuts.
 
 ## Architecture
 
@@ -145,7 +155,7 @@ A mechanism to allocate a **single dedicated block** at the very end of the memo
 *   **Constraint:** Only one scratch allocation is active at a time per `EM` instance.
 
 ### 3. Sub-Allocators
-Specialized tools for specific allocation patterns. They are created *inside* a parent Core/Arena with zero overhead.
+Specialized tools for specific allocation patterns. They are created *inside* a parent `EM` with zero overhead.
 *   **Bump Allocator:** A linear allocator that only moves a pointer forward. Ideal for frame-based rendering or parsing where deallocation happens all at once.
 *   **Slab Allocator:** A fixed-size pool that eliminates metadata overhead for small, identical objects. Uses a hybrid Lazy-Bump / Free-List strategy for O(1) performance.
 *   *(Planned: Stack & Queue allocators for LIFO and FIFO patterns).*
@@ -170,7 +180,7 @@ Standard allocators often use global locks to protect the heap, causing thread c
 
 *   **The Model:** The library is designed for **Thread-Local Allocation** patterns. Each thread should own its own `EM` instance (or a dedicated nested scope).
 *   **The Benefit:** Zero synchronization overhead. Allocation speed remains deterministic and blazing fast regardless of the number of active threads.
-*   **Safety Note:** If multiple threads must share a single *parent* arena to create nested scopes, access to that parent must be externally synchronized. Once created, the nested arena is independent.
+*   **Safety Note:** If multiple threads must share a single *parent* `EM` to create nested scopes, access to that parent must be externally synchronized. Once created, the nested `EM` is independent.
 
 ## Usage
 
@@ -221,18 +231,18 @@ em_destroy(em);
 ```
 
 ### 3. Alignment Control (Global & Per-Allocation)
-Enforce strict memory boundaries globally for an entire context (including nested sub-arenas), or request specific alignment for individual blocks.
+Enforce strict memory boundaries globally for an entire context (including nested sub-EM's), or request specific alignment for individual blocks.
 
 ```c
 // 1. Global: EVERY allocation is guaranteed 64-byte alignment
 EM *gpu_em = em_create_aligned(1024 * 1024, 64);
-// Note: You can also use em_create_nested_aligned() for sub-arenas
+// Note: You can also use em_create_nested_aligned() for sub-EM's
 
 void *buffer = em_alloc(gpu_em, 1024); // Automatically 64-byte aligned
 
 // 2. Per-Allocation: Request a specific boundary on the fly
 // Allocate a single structure perfectly aligned to a 256-byte boundary,
-// forcing a stricter alignment than the arena's 64-byte baseline for this specific allocation.
+// forcing a stricter alignment than the EM's 64-byte baseline for this specific allocation.
 void *dma_struct = em_alloc_aligned(gpu_em, sizeof(MyDMAStruct), 256);
 ```
 
@@ -284,7 +294,7 @@ Ideal for high-density allocations of identical objects (particles, nodes, matri
 
 ```c
 // Create a Slab for 1000 particles (64 bytes each)
-// Total size is 64KB, carved out from the parent arena
+// Total size is 64KB, carved out from the parent EM
 Slab *particle_pool = em_slab_create(main_em, 1000 * 64, 64);
 
 // O(1) Allocation
@@ -448,14 +458,14 @@ Helps detect use-after-free and uninitialized memory usage.
 ### Thread Safety & Concurrency
 The library is intentionally lock-free and not thread-safe out of the box. It contains no internal mutexes, atomics, or spinlocks. 
 *   **Thread-Local Storage (TLS):** This is the intended and optimal use case. By provisioning a dedicated `EM` instance per thread, allocations remain deterministic and highly performant with zero thread contention or context-switching overhead.
-*   **Shared Arenas:** If memory must be allocated or freed from the *same* `EM` instance across multiple threads simultaneously, the `em_alloc` and `em_free` calls must be wrapped in external synchronization primitives. The library does not internally protect against race conditions.
+*   **Shared EM's:** If memory must be allocated or freed from the *same* `EM` instance across multiple threads simultaneously, the `em_alloc` and `em_free` calls must be wrapped in external synchronization primitives. The library does not internally protect against race conditions.
 
 ### MISRA C Non-Compliance (By Design)
 For environments that mandate strict **MISRA C** compliance (e.g., critical aerospace or automotive systems), `easy_memory` is not a suitable choice.
 
 To achieve extreme memory density (metadata overhead of only 4 machine words per block) and O(1) nested tracking, the architecture heavily relies on advanced C paradigms that MISRA explicitly forbids:
 *   **Pointer Tagging:** Metadata flags (e.g., `is_free`, `color`, `has_scratch`) are embedded directly into the least significant bits of valid pointers.
-*   **Type Punning & Unions:** `EM` and `Bump` structures physically masquerade as standard `Block` headers to their parent arenas, achieving zero-cost hierarchy tracking.
+*   **Type Punning & Unions:** `EM` and `Bump` structures physically masquerade as standard `Block` headers to their parent `EM's`, achieving zero-cost hierarchy tracking.
 *   **Pointer Arithmetic:** Extensive casting between pointers and `uintptr_t` is utilized to calculate absolute memory alignments and dynamic padding offsets.
 *   **XOR-Magic:** Pointers are XORed with `EM_MAGIC` numbers to validate memory provenance and dynamically detect alignment gaps.
 

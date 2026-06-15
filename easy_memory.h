@@ -3,17 +3,46 @@
 
 /*
  * Easy Memory Allocator (easy_memory.h)
- * A lightweight, efficient memory allocator for C programs.
+ * A lightweight, platform-agnostic, and safe memory management system for C.
+ *
  * Features:
-    - Dynamic and static memory arenas
-    - Nested arenas for hierarchical memory management
-    - Bump allocator for fast linear allocations
-    - Scratchpad allocations for temporary memory usage
-    - Free block management using Left-Leaning Red-Black (LLRB) trees
- * Configurable via macros for assertions, poisoning, and static linkage.
+ *   - Dynamic and static memory arenas
+ *   - Scoped nested arenas for hierarchical memory management
+ *   - Iterative Left-Leaning Red-Black (LLRB) trees for free-block management
+ *   - Tail-end scratchpad allocations for temporary lifecycle isolation
+ *   - Modular sub-allocators:
+ *       - Bump: O(1) linear allocator with trim and bulk-reset support
+ *       - Slab: O(1) fixed-size block pool using hybrid lazy-bump / free-list
+ *       - Stack: O(1) LIFO allocator on an inverted bi-directional buffer with dynamic metadata scaling
+ *
+ * Configurable via macros for safety policies, assertions, and memory poisoning.
  * Suitable for embedded systems, game development, and performance-critical applications.
+ *
  * Author: gooderfreed
- * License: MIT
+ * License: MIT (see license text below)
+ *
+ * ============================================================================
+ * LICENSE (MIT)
+ * ============================================================================
+ * Copyright (c) 2026 gooderfreed
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
 */
 
 /*
@@ -42,9 +71,9 @@
  *    #define EM_NO_ATTRIBUTES     // Disable all compiler-specific attributes
  *
  *  TUNING:
- *    #define EM_MAGIC <value>         // Custom magic number for block validation
- *    #define EM_DEFAULT_ALIGNMENT 16  // Global alignment baseline
- *    #define EM_MIN_BUFFER_SIZE   16  // Minimum split block size
+ *    #define EM_MAGIC             <value>  // Custom magic number for block validation
+ *    #define EM_DEFAULT_ALIGNMENT <value>  // Global alignment baseline
+ *    #define EM_MIN_BUFFER_SIZE   <value>  // Minimum split block size
  * ============================================================================
 */
 
@@ -5089,8 +5118,13 @@ EMDEF void em_slab_destroy(Slab *slab) {
 /*
  * Create a Stack Allocator
  *
- * Initializes a highly optimized, bi-directional LIFO stack allocator within a 
- * parent Easy Memory instance. Ideal for scenarios requiring rapid, sequential 
+ * Initializes a highly optimized, single-ended LIFO stack built on an 
+ * inverted bi-directional buffer layout with dynamic metadata bit-width scaling within a 
+ * parent Easy Memory instance. 
+ * By growing metadata forward from the start and payloads backward from the 
+ * end, it completely decouples alignment constraints and eliminates inline 
+ * metadata overhead.
+ * Ideal for scenarios requiring rapid, sequential 
  * allocations and deallocations without manual marker management or inline 
  * metadata overhead.
  *
@@ -5132,7 +5166,8 @@ EMDEF Stack *em_stack_create(EM *EM_RESTRICT parent_em, size_t stack_size) {
 /*
  * Create a Scratch Stack Allocator
  *
- * Initializes a highly optimized, bi-directional LIFO stack allocator within a 
+ * Initializes a highly optimized, single-ended LIFO stack built on an 
+ * inverted bi-directional buffer layout with dynamic metadata bit-width scaling within a 
  * scratchpad block at the extreme physical end (highest addresses) of the 
  * parent instance.
  *
@@ -5211,7 +5246,7 @@ EMDEF void *em_stack_alloc_aligned(Stack *EM_RESTRICT stack, size_t size, size_t
 
 
     /* 
-     * WHY DOING THIS? (The Physics of Bi-Directional Stack Layout)
+     * WHY DOING THIS? (The Physics of Inverted Bi-Directional Layout)
      *
      * 1. RADICAL METADATA FOOTPRINT REDUCTION (THE PRIMARY WIN):
      * In traditional stack allocators supporting parameterless LIFO popping, each allocation 
@@ -5222,12 +5257,12 @@ EMDEF void *em_stack_alloc_aligned(Stack *EM_RESTRICT stack, size_t size, size_t
      * requires only 2 bytes (uint16_t). This yields a massive 2x, 4x, or even 8x reduction 
      * in metadata footprint, unlocking unprecedented memory density.
      *
-     * 2. BI-DIRECTIONAL LAYOUT & ZERO ALIGNMENT WASTE:
+     * 2. INVERTED LAYOUT & ZERO ALIGNMENT WASTE:
      * By separating metadata and user data into two opposing directions (metadata grows 
-     * forward from the start, user data grows backward from the end), we avoid storing 
-     * metadata inline. This prevents having to apply padding to align metadata headers 
-     * alongside aligned user payloads. Alignment is applied exclusively to the raw user data 
-     * at the end of the stack, eliminating all wasted padding gaps within the metadata zone.
+     * forward from the start, user data grows backward from the end of the buffer), we avoid 
+     * storing metadata inline. This prevents having to apply padding to align metadata 
+     * headers alongside aligned user payloads. Alignment is applied exclusively to the raw 
+     * user data at the end of the stack, eliminating all wasted padding gaps within the metadata zone.
      *
      * 3. METADATA CLUSTERING & L1 CACHE LOCALITY:
      * Storing metadata as a dense, contiguous array clusters all control paths into a tiny, 
@@ -5373,9 +5408,10 @@ EMDEF StackMarker em_stack_get_marker(const Stack *stack) {
 
     size_t cur_index = stack_get_meta_index(stack);
     uintptr_t stack_addr = (uintptr_t)stack;
+    uintptr_t parent_em = (uintptr_t)stack_get_em(stack);
 
     marker.index = cur_index ^ stack_addr;
-    marker.magic = (uintptr_t)EM_MAGIC ^ stack_addr;
+    marker.magic = parent_em ^ stack_addr;
 
     return marker;
 }
@@ -5433,9 +5469,10 @@ EMDEF void em_stack_free_to_marker(Stack *EM_RESTRICT stack, StackMarker marker)
      * immediately triggering a safe assertion or OOM path. This is a 100% mathematically 
      * secure protection mechanism compiled into simple 1-cycle bitwise XOR instructions.
     */
+    uintptr_t parent_em = (uintptr_t)stack_get_em(stack);
 
     uintptr_t decoded_magic = marker.magic ^ stack_addr;
-    EM_CHECK_V((decoded_magic == (uintptr_t)EM_MAGIC), 
+    EM_CHECK_V((decoded_magic == parent_em), 
                "Internal Error: 'em_stack_free_to_marker' detected invalid, corrupted or alien stack marker");
 
     size_t decoded_index = marker.index ^ stack_addr;

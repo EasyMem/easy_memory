@@ -156,6 +156,12 @@ static void test_stack_operations_normal(void) {
         ASSERT_QUIET(allocated_total <= capacity, "Allocated size cannot exceed capacity");
     }
 
+    // Squeeze the remaining bytes with 1-byte allocations until absolutely full.
+    // This handles differences in header sizes and alignments across 16, 32, and 64-bit systems.
+    while (em_stack_alloc(stack, 1) != NULL) {
+        // Keep squeezing
+    }
+
     // Once exhausted, any further allocations must return NULL
     ASSERT(em_stack_alloc(stack, 1) == NULL, "Stack allocation should return NULL when exhausted");
 

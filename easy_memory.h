@@ -356,9 +356,9 @@ EM_STATIC_ASSERT(EM_MIN_BUFFER_SIZE > 0, "MIN_BUFFER_SIZE must be a positive val
  * Can be customized by defining EM_MAGIC before including this header.
 */
 #ifndef EM_MAGIC
-#   if UINTPTR_MAX > 0xFFFFFFFF
+#   if UINTPTR_MAX > 0xFFFFFFFFUL
 #       define EM_MAGIC 0xDEADBEEFDEADBEEFULL
-#   elif UINTPTR_MAX > 0xFFFF
+#   elif UINTPTR_MAX > 0xFFFFU
 #       define EM_MAGIC 0xDEADBEEFUL
 #   else
 #       define EM_MAGIC 0xBEEFU
@@ -1135,6 +1135,7 @@ EMDEF void em_slab_destroy(Slab *slab);
 
 
 // --- Stack Allocator ---
+
 EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED
 Stack *em_stack_create(EM *EM_RESTRICT parent_em, size_t stack_size);
 EMDEF EM_ATTR_MALLOC EM_ATTR_WARN_UNUSED
@@ -2352,15 +2353,24 @@ static inline void stack_set_em(Stack *stack, EM *em) {
  */
 static inline size_t stack_calculate_meta_type(size_t capacity) {
     if (capacity <= UINT8_MAX) return 0;  // Offsets fit in uint8_t (0..255)
+    
+#if SIZE_MAX <= UINT16_MAX
+    // On 16-bit platforms, capacity is at most 65535, so we can always use uint16_t offsets.
+    return 1;
+#else
     if (capacity <= UINT16_MAX) return 1; // Offsets fit in uint16_t (0..65535)
-    #if UINTPTR_MAX == 0xFFFFFFFFUL
+    
+#if SIZE_MAX <= UINT32_MAX
+    // On 32-bit platforms, capacity is at most 4GB, so we can use uint32_t offsets.
     return 2;
-    #else
+#else
+    // On 64-bit platforms, handle the full range up to 64-bit offsets.
     if (capacity <= UINT32_MAX) {
         return 2;
     }
     return 3;
-    #endif
+#endif
+#endif
 }
 
 

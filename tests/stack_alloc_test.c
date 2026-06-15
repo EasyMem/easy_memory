@@ -147,7 +147,7 @@ static void test_stack_operations_normal(void) {
     size_t capacity = stack_get_capacity(stack);
     size_t allocated_total = 0;
     
-    while (true) {
+    for (;;) {
         void *p = em_stack_alloc(stack, 32);
         if (!p) {
             break;

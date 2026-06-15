@@ -2404,9 +2404,11 @@ static inline size_t stack_read_meta(Stack *stack, size_t meta_type, size_t inde
         case 3:
             return meta64[index];
         #endif
+        // LCOV_EXCL_START
         default:
             EM_ASSERT(false && "Invalid meta type in stack allocator");
             return 0;
+        // LCOV_EXCL_STOP
     }
 }
 
@@ -2443,9 +2445,11 @@ static inline void stack_write_meta(Stack *stack, size_t meta_type, size_t index
             meta64[index] = (uint64_t)value;
             break;
         #endif
+        // LCOV_EXCL_START
         default:
             EM_ASSERT(false && "Invalid meta type in stack allocator");
             break;
+        // LCOV_EXCL_STOP
     }
 }
 
@@ -2561,8 +2565,8 @@ static inline Block *create_next_block(EM *em, Block *prev_block) {
     EM_ASSERT((prev_block != NULL) && "Internal Error: 'create_next_block' called on NULL prev_block");
     
     if (!is_block_within_em(em, prev_block)) {
-        EM_ASSERT(false && "Internal Error: prev_block out of bounds");
         // LCOV_EXCL_START
+        EM_ASSERT(false && "Internal Error: prev_block out of bounds");
         return NULL; // Exclude from coverage as this should never happen if the library is used correctly, and it's already covered by assertions
         // LCOV_EXCL_STOP
     }
@@ -2964,7 +2968,7 @@ static void detach_block_by_ptr(Block **tree_root, Block *target) {
                 current = get_left_tree(current);
             } else if (target_quality > current_quality) {
                 current = get_right_tree(current);
-            } else {
+            } else { // LCOV_EXCL_LINE
                 if ((uintptr_t)target > (uintptr_t)current)
                     current = get_left_tree(current);
                 else

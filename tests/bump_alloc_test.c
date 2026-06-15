@@ -337,6 +337,18 @@ static void test_bump_trim(void) {
 
         em_destroy(em);
     }
+
+    TEST_CASE("Trim scratch bump allocator");
+    {
+        EM *em = em_create(1024);
+        Bump *scratch_bump = em_bump_create_scratch(em, 128);
+
+        // This will trigger the get_is_in_scratch check and return immediately
+        em_bump_trim(scratch_bump); 
+
+        em_bump_destroy(scratch_bump);
+        em_destroy(em);
+    }
 }
 
 static void test_scratch_bump_lifecycle(void) {

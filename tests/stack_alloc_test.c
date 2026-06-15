@@ -192,9 +192,7 @@ static void test_stack_operations_garbage(void) {
     ASSERT(em_stack_alloc_aligned(stack, 16, 15) == NULL, "Should fail on non-power-of-two alignment");
     
     // Check below minimum limit
-    if (EMMIN_ALIGNMENT > 1) {
-        ASSERT(em_stack_alloc_aligned(stack, 16, EMMIN_ALIGNMENT / 2) == NULL, "Should fail if alignment is too small");
-    }
+    ASSERT(em_stack_alloc_aligned(stack, 16, EMMIN_ALIGNMENT / 2) == NULL, "Should fail if alignment is too small");
 
     // Check above maximum limit
     ASSERT(em_stack_alloc_aligned(stack, 16, EMMAX_ALIGNMENT * 2) == NULL, "Should fail if alignment is too large");

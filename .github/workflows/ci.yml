@@ -57,7 +57,7 @@ jobs:
 
       - name: generate-coverage
         if: github.repository == 'EasyMem/easy_memory'
-        run: make coverage CC="${CC_CMD}" STD_C=c99 EXTRA_CFLAGS="-O0 -DEM_SAFETY_POLICY=1"
+        run: make coverage CC="${CC_CMD}" STD_C=c99 EXTRA_CFLAGS="-O0 -DEM_SAFETY_POLICY=1 -DEM_ASSERT_STAYS"
         
       - name: upload-codecov
         if: github.repository == 'EasyMem/easy_memory'

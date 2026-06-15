@@ -12,26 +12,73 @@ static void test_stack_lifecycle_normal(void) {
     size_t initial_free = free_size_in_tail(em);
 
     TEST_CASE("Standard Stack initialization");
-    size_t stack_size = 128;
+    size_t stack_size = 128; 
     Stack *stack = em_stack_create(em, stack_size);
     
     ASSERT(stack != NULL, "Stack pointer should not be NULL");
     ASSERT(stack_get_capacity(stack) >= stack_size, "Capacity should meet requested size");
     ASSERT(stack_get_em(stack) == em, "Parent EM should be correctly stored");
     ASSERT(stack_get_meta_index(stack) == 0, "Initial metadata index should be 0");
-    
     ASSERT(stack_get_meta_type(stack) == 0, "Metadata type should be 0 (uint8_t) for small capacity");
     
+    // Allocate and free to cover case 0 (uint8_t offsets) in stack_write_meta/stack_read_meta
+    void *p0 = em_stack_alloc(stack, 16);
+    ASSERT(p0 != NULL, "Allocation should succeed");
+    em_stack_free(stack, p0);
+
     em_stack_destroy(stack);
     ASSERT(free_size_in_tail(em) == initial_free, "Parent EM should reclaim memory after Stack destruction");
 
     TEST_CASE("Stack Metadata Type Scaling");
+    // To trigger type 1 (uint16_t offsets), we need capacity > UINT8_MAX (255)
     Stack *medium_stack = em_stack_create(em, 512);
     ASSERT(medium_stack != NULL, "Medium stack pointer should not be NULL");
     ASSERT(stack_get_meta_type(medium_stack) == 1, "Metadata type should be 1 (uint16_t) for medium capacity");
     
+    // Allocate and free to cover case 1 (uint16_t offsets)
+    void *p1 = em_stack_alloc(medium_stack, 16);
+    ASSERT(p1 != NULL, "Allocation should succeed");
+    em_stack_free(medium_stack, p1);
+
     em_stack_destroy(medium_stack);
     ASSERT(free_size_in_tail(em) == initial_free, "Parent EM should reclaim memory after medium Stack destruction");
+
+    TEST_CASE("Stack Metadata Type 2 (uint32_t offsets)");
+    // To trigger type 2 (uint32_t offsets), we need capacity > UINT16_MAX (65535)
+    // We allocate a small 100 KB arena and 70,000 bytes stack (~68 KB)
+    EM *large_em = em_create(100 * 1024);
+    Stack *large_stack = em_stack_create(large_em, 70000);
+    ASSERT(large_stack != NULL, "Large stack pointer should not be NULL");
+    ASSERT(stack_get_meta_type(large_stack) == 2, "Metadata type should be 2 (uint32_t) for large capacity");
+    
+    // Allocate and free to cover case 2 (uint32_t offsets) in stack_write_meta/stack_read_meta
+    void *p2 = em_stack_alloc(large_stack, 16);
+    ASSERT(p2 != NULL, "Allocation should succeed");
+    em_stack_free(large_stack, p2);
+
+    em_stack_destroy(large_stack);
+    em_destroy(large_em);
+
+#if UINTPTR_MAX == 0xFFFFFFFFFFFFFFFFULL
+    TEST_CASE("Faking Stack Metadata Type 3 (uint64_t offsets)");
+    // To cover case 3 (uint64_t offsets) on 64-bit systems without allocating 4 GB of RAM,
+    // we manually force type 3 on a small valid stack.
+    Stack *fake_stack = em_stack_create(em, 128);
+    stack_set_meta_type(fake_stack, 3); // Force type 3
+    
+    void *p3 = em_stack_alloc(fake_stack, 16);
+    ASSERT(p3 != NULL, "Allocation with faked meta type should succeed");
+    em_stack_free(fake_stack, p3);
+    
+    em_stack_destroy(fake_stack);
+#endif
+
+    TEST_CASE("Direct coverage for stack_calculate_meta_type branches");
+#if UINTPTR_MAX == 0xFFFFFFFFFFFFFFFFULL
+    // Direct pure function call to cover the 64-bit type 3 branch (capacity > UINT32_MAX)
+    size_t huge_capacity = (size_t)UINT32_MAX + 100;
+    ASSERT(stack_calculate_meta_type(huge_capacity) == 3, "Should return 3 for huge capacity");
+#endif
 
     TEST_CASE("Scratch Stack initialization");
     Stack *scratch_stack = em_stack_create_scratch(em, stack_size);

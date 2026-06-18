@@ -159,7 +159,7 @@ A mechanism to allocate a **single dedicated block** at the very end of the memo
 Specialized tools for specific allocation patterns. They are created *inside* a parent `EM` with zero overhead.
 *   **Bump Allocator:** A linear allocator that only moves a pointer forward. Ideal for frame-based rendering or parsing where deallocation happens all at once.
 *   **Slab Allocator:** A fixed-size pool that eliminates metadata overhead for small, identical objects. Uses a hybrid Lazy-Bump / Free-List strategy for O(1) performance.
-*   **Stack Allocator:** A highly optimized LIFO allocator utilizing an inverted bi-directional layout to isolate payload alignments and dynamically scale metadata footprint.
+*   **Stack Allocator:** A highly optimized LIFO allocator utilizing an inverted bi-directional layout to isolate payload alignments and dynamically scale metadata footprint. *(Now also available as a lightweight, independent standalone library: [**easy_stack**](https://github.com/EasyMem/easy_stack)).*
 *   *(Planned: Queue allocator for FIFO patterns).*
 
 ## Architectural Philosophy

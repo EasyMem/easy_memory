@@ -18,6 +18,7 @@
         <a href="https://www.codefactor.io/repository/github/easymem/easy_memory"><img src="https://www.codefactor.io/repository/github/easymem/easy_memory/badge" alt="CodeFactor"></a>
         <a href="https://codecov.io/gh/easymem/easy_memory"><img src="https://codecov.io/gh/easymem/easy_memory/graph/badge.svg" alt="codecov"></a>
         <a href="https://github.com/easymem/easy_memory/actions/workflows/ci.yml"><img src="https://github.com/easymem/easy_memory/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+        <a href="https://www.bestpractices.dev/projects/13778"><img src="https://www.bestpractices.dev/projects/13778/badge"></a>
       </p>
     </td>
   </tr>
@@ -25,7 +26,7 @@
 
 <br/>
 
-**A strictly typed, platform-agnostic, and safe memory management system designed for high-performance and embedded applications.**
+**An easy-to-use, single-header C memory management system. Fast, leak-safe memory contexts with modular sub-allocators and zero dependencies.**
 
 ## TL;DR
 
@@ -199,15 +200,48 @@ Include the header and define the implementation in **one** source file.
 
 In complex projects with intricate include hierarchies, ensuring that `EASY_MEMORY_IMPLEMENTATION` is defined in exactly one `.c` file can be challenging. An alternative approach is to compile the header file directly into its own object file.
 
-You can achieve this by adding a specific build rule to your build system (e.g., Makefile, CMake). Here's an example using `gcc`:
+#### Option A: Using a Makefile
 
-```bash
-# Example Makefile rule
+You can add a specific build rule to compile the header into an isolated translation unit using `gcc` or `clang`:
+
+```makefile
 easy_memory.o: easy_memory.h
 	gcc -x c -DEASY_MEMORY_IMPLEMENTATION -c easy_memory.h -o easy_memory.o
 ```
 
 This command tells the compiler to treat `easy_memory.h` as a C source file, define `EASY_MEMORY_IMPLEMENTATION`, and compile it into an object file named `easy_memory.o`. You can then link this object file with the rest of your project.
+
+#### Option B: Using CMake (`OBJECT` Library)
+
+If your project uses CMake, you can encapsulate `easy_memory.h` inside a CMake `OBJECT` library target. This compiles the implementation once as an isolated translation unit without polluting your source files with `#define EASY_MEMORY_IMPLEMENTATION`:
+
+```cmake
+add_library(easy_memory OBJECT)
+target_sources(easy_memory PRIVATE easy_memory.h)
+
+set_source_files_properties(easy_memory.h PROPERTIES
+    HEADER_FILE_ONLY FALSE
+    LANGUAGE C
+    COMPILE_DEFINITIONS "EASY_MEMORY_IMPLEMENTATION"
+)
+
+# Force the compiler to treat easy_memory.h as C source code
+if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+    set_source_files_properties(easy_memory.h PROPERTIES COMPILE_FLAGS "-x c")
+elseif(MSVC)
+    set_source_files_properties(easy_memory.h PROPERTIES COMPILE_FLAGS "/TC")
+endif()
+
+# Link the precompiled object to your executable or library:
+# target_link_libraries(your_target PRIVATE easy_memory)
+```
+
+Alternatively, if you prefer the standard header-only approach within CMake, you can use an `INTERFACE` library target instead:
+
+```cmake
+add_library(easy_memory INTERFACE)
+target_include_directories(easy_memory INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
+```
 
 ### 2. Standard Usage & Control
 Basic allocation, zero-initialization, and fast resetting.
